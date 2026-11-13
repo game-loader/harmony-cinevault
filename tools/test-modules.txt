@@ -1,0 +1,11 @@
+components/detail/DetailLogic
+player/SubtitleParser
+components/settings/SettingsLogic
+common/Models
+scraper/NameParser
+player/PlayerLogic
+providers/EmbyTypes
+providers/EmbyMapper
+providers/DeviceProfile
+quark/CookieUtil
+components/MediaLogic

@@ -102,5 +102,5 @@ export async function postJson<T>(url: string, headers: Record<string, string>, 
   Object.keys(headers).forEach((k: string) => { h[k] = headers[k]; });
   h['Content-Type'] = 'application/json';
   const r = await request('POST', url, h, JSON.stringify(body));
-  return (r.body.length > 0 ? JSON.parse(r.body) : {}) as T;
+  return JSON.parse(r.body.length > 0 ? r.body : '{}') as T;
 }
