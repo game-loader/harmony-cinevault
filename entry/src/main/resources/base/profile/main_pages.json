@@ -1,0 +1,13 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/Detail",
+    "pages/Player",
+    "pages/Library",
+    "pages/Search",
+    "pages/Settings",
+    "pages/ServerEdit",
+    "pages/QuarkLogin",
+    "pages/QuarkBrowser"
+  ]
+}

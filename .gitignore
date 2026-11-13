@@ -1,0 +1,9 @@
+node_modules
+.hvigor/
+build/
+local.properties
+oh-package-lock.json5
+oh_modules/
+entry/oh_modules/
+*.hap
+.build.log

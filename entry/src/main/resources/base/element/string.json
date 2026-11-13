@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "app_name", "value": "影库" },
+    { "name": "module_desc", "value": "Emby / Jellyfin / 夸克网盘 视频播放器与媒体库" },
+    { "name": "perm_internet", "value": "访问媒体服务器、网盘和 TMDB 元数据" }
+  ]
+}

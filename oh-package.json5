@@ -1,0 +1,6 @@
+{
+  "modelVersion": "6.0.0",
+  "description": "Open-source AirPods control for HarmonyOS (AAP over L2CAP), based on LibrePods",
+  "dependencies": {},
+  "devDependencies": {}
+}
