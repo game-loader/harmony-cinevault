@@ -17,6 +17,9 @@ interface StoredSource {
   cookie?: string;
   rootFid?: string;
   enabled?: boolean;
+  quarkAuth?: string;
+  quarkRefreshToken?: string;
+  quarkDeviceId?: string;
 }
 
 const PREF_NAME: string = 'sources';
@@ -95,6 +98,9 @@ export class SourceStore {
     c.cookie = str(s.cookie, '');
     c.rootFid = str(s.rootFid, '0') || '0';
     c.enabled = typeof s.enabled === 'boolean' ? s.enabled : true;
+    c.quarkAuth = str(s.quarkAuth, 'cookie') || 'cookie';
+    c.quarkRefreshToken = str(s.quarkRefreshToken, '');
+    c.quarkDeviceId = str(s.quarkDeviceId, '');
     return c;
   }
 
@@ -111,6 +117,9 @@ export class SourceStore {
     c.cookie = src.cookie;
     c.rootFid = src.rootFid;
     c.enabled = src.enabled;
+    c.quarkAuth = src.quarkAuth;
+    c.quarkRefreshToken = src.quarkRefreshToken;
+    c.quarkDeviceId = src.quarkDeviceId;
     return c;
   }
 

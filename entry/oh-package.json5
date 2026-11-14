@@ -4,5 +4,5 @@
   "description": "",
   "main": "",
   "license": "GPL-3.0-or-later",
-  "dependencies": {}
+  "dependencies": { "libcodecprobe.so": "file:./src/main/cpp/types/libcodecprobe" }
 }

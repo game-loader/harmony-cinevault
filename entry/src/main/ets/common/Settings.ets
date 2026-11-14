@@ -19,6 +19,12 @@ export class AppSettings {
   homeSourceId: string = '';        // '' = aggregate all sources
   landscapeHome: boolean = true;    // big-screen hero layout
   deviceId: string = '';            // generated once, sent to Emby/Jellyfin as DeviceId
+  superResolution: boolean = true;  // AVPlayer GPU/NPU super-resolution for sub-1080p sources
+  preferHdr: boolean = true;        // PlaybackStrategy.preferredHdr
+  /** 'auto' = profile from probed decoders; 'compat' = h264/aac only (forces server transcode for the rest) */
+  codecMode: string = 'auto';
+  /** Prefer server remux (copy streams into HLS/fMP4) over full transcode when only the container is unsupported */
+  preferRemux: boolean = true;
 }
 
 /** Shape of persisted JSON: every field optional so older/partial saves merge with defaults. */
@@ -37,6 +43,10 @@ interface StoredSettings {
   homeSourceId?: string;
   landscapeHome?: boolean;
   deviceId?: string;
+  superResolution?: boolean;
+  preferHdr?: boolean;
+  codecMode?: string;
+  preferRemux?: boolean;
 }
 
 const PREF_NAME: string = 'settings';
@@ -102,6 +112,10 @@ export class Settings {
     if (typeof src.homeSourceId === 'string') { dst.homeSourceId = src.homeSourceId; }
     if (typeof src.landscapeHome === 'boolean') { dst.landscapeHome = src.landscapeHome; }
     if (typeof src.deviceId === 'string') { dst.deviceId = src.deviceId; }
+    if (typeof src.superResolution === 'boolean') { dst.superResolution = src.superResolution; }
+    if (typeof src.preferHdr === 'boolean') { dst.preferHdr = src.preferHdr; }
+    if (typeof src.codecMode === 'string' && src.codecMode) { dst.codecMode = src.codecMode; }
+    if (typeof src.preferRemux === 'boolean') { dst.preferRemux = src.preferRemux; }
   }
 
   /** Synchronous snapshot from memory (defaults until load() resolves). Returns a copy. */
@@ -125,6 +139,10 @@ export class Settings {
     d.homeSourceId = src.homeSourceId;
     d.landscapeHome = src.landscapeHome;
     d.deviceId = src.deviceId;
+    d.superResolution = src.superResolution;
+    d.preferHdr = src.preferHdr;
+    d.codecMode = src.codecMode;
+    d.preferRemux = src.preferRemux;
     return d;
   }
 

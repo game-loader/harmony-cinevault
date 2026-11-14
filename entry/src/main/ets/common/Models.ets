@@ -18,6 +18,10 @@ export class SourceConfig {
   cookie: string = '';        // Quark cookie
   rootFid: string = '0';      // Quark: folder that holds the media library
   enabled: boolean = true;
+  /** Quark auth mode: 'tv' = TV-client QR login with refresh token (default for new logins), 'cookie' = web cookie */
+  quarkAuth: string = 'cookie';
+  quarkRefreshToken: string = '';
+  quarkDeviceId: string = '';   // TV API device_id (md5 hex), generated once per source
 }
 
 export class ImageSet {
@@ -132,6 +136,17 @@ export class PlaybackInfo {
   subtitles: SubtitleTrack[] = [];
   /** Alternative qualities (e.g. Quark transcodes); label -> url */
   qualities: QualityOption[] = [];
+  /** How the server delivers it: 'direct' (original file), 'remux' (container changed, streams copied), 'transcode' */
+  deliveryMode: string = 'direct';
+  /** Source stream codecs as reported by the server ('' if unknown), e.g. 'hevc', 'eac3' */
+  videoCodec: string = '';
+  audioCodec: string = '';
+  videoWidth: number = 0;
+  videoHeight: number = 0;
+  videoRange: string = '';       // 'SDR' | 'HDR10' | 'HLG' | 'DOVI' | 'HDR Vivid' | ''
+  bitrate: number = 0;           // bps, 0 unknown
+  /** Why the server transcoded (Emby TranscodeReasons), empty when direct */
+  transcodeReasons: string[] = [];
 }
 
 export class QualityOption {
