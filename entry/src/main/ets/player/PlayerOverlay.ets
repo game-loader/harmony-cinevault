@@ -185,6 +185,7 @@ export struct PlayerOverlay {
               if (this.hasEpisodes) {
                 this.barButton('选集', 'episodes')
               }
+              this.barButton('更多', 'more')
             }
             .width('100%')
             .margin({ top: 4 })

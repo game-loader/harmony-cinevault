@@ -133,11 +133,15 @@ export function normalizeServerUrl(input: string): string {
 }
 
 /** Display text for a source's state in the settings list. */
-export function sourceStatusText(kind: string, enabled: boolean, token: string, cookie: string): string {
+export function sourceStatusText(kind: string, enabled: boolean, token: string, cookie: string,
+  quarkAuth: string = 'cookie', quarkRefreshToken: string = ''): string {
   if (!enabled) {
     return '已停用';
   }
   if (kind === 'quark') {
+    if (quarkAuth === 'tv') {
+      return quarkRefreshToken ? '已登录 (TV)' : '未登录';
+    }
     return cookie ? '已登录' : '未登录';
   }
   return token ? '已登录' : '未登录';

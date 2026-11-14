@@ -9,3 +9,7 @@ providers/EmbyMapper
 providers/DeviceProfile
 quark/CookieUtil
 components/MediaLogic
+components/settings/CodecInfoLogic
+quark/QuarkTypes
+quark/QuarkTvSign
+media/ProfileBuilder

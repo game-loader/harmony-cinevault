@@ -27,6 +27,9 @@ test('status + kind + tmdb key', () => {
   assert.equal(L.sourceStatusText('emby', true, 'tok', ''), '已登录');
   assert.equal(L.sourceStatusText('quark', true, '', ''), '未登录');
   assert.equal(L.sourceStatusText('emby', false, 'tok', ''), '已停用');
+  assert.equal(L.sourceStatusText('quark', true, '', '', 'tv', 'rt'), '已登录 (TV)');
+  assert.equal(L.sourceStatusText('quark', true, '', 'c=1', 'tv', ''), '未登录');
+  assert.equal(L.sourceStatusText('quark', true, '', 'c=1', 'cookie', ''), '已登录');
   assert.equal(L.kindLabel('jellyfin'), 'Jellyfin');
   assert.equal(L.tmdbKeyLooksValid('0123456789abcdef0123456789abcdef'), true);
   assert.equal(L.tmdbKeyLooksValid('abc'), false);

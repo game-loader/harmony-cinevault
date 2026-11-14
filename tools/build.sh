@@ -16,6 +16,9 @@ if [ -z "${OHOS_BASE_SDK_HOME:-}" ]; then
 fi
 node tools/test.mjs || { echo "unit tests FAILED"; exit 1; }
 log=$(pwd)/.build.log
+# hvigor 6.26 calls fs.rmdirSync(dir, {recursive}) on the native output dir when the build mode changes; Node 26 rejects that.
+# Clearing the dir up front makes hvigor skip the call (ninja keeps its incremental state under entry/.cxx).
+rm -rf entry/build/default/intermediates/cmake
 node node_modules/@ohos/hvigor/bin/hvigor.js --mode module -p module=entry@default -p product=default \
   -p buildMode="$mode" assembleHap --no-daemon > "$log" 2>&1
 status=$?

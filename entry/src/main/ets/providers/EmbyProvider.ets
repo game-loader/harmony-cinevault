@@ -9,9 +9,15 @@ import {
 import {
   EmbyContext, makeContext, mapItem, mapItems, mapView, isVideoView, buildItemsQuery, buildPlaybackBody,
   mapPlayback, buildReport, authHeaders, candidateBaseUrls, detectKind, resizeImageUrl, LIST_FIELDS,
-  DETAIL_FIELDS, IMAGE_TYPES, PlaybackReport
+  DETAIL_FIELDS, IMAGE_TYPES, PlaybackReport, pickMediaSource, applyStreamInfo, PlaybackInfoBody
 } from './EmbyMapper';
-import { buildDeviceProfile, DEFAULT_MAX_BITRATE } from './DeviceProfile';
+import { DEFAULT_MAX_BITRATE } from './DeviceProfile';
+import { buildProfile, ProfileOptions } from '../media/ProfileBuilder';
+import { CodecCaps } from '../media/CodecCaps';
+import { Settings, AppSettings } from '../common/Settings';
+
+/** Bitrate cap for a forced transcode when the user hasn't chosen one. */
+const FORCED_TRANSCODE_BITRATE: number = 8000000;
 
 /** Result of EmbyProvider.login, used by the server-edit page. */
 export class EmbyLoginResult {
@@ -356,15 +362,27 @@ export class EmbyProvider implements MediaProvider {
 
   async getPlayback(item: MediaItem, req: PlaybackRequest): Promise<PlaybackInfo> {
     const uid = this.uid();
-    const maxBitrate = req.maxBitrate > 0 ? req.maxBitrate : DEFAULT_MAX_BITRATE;
+    const force = req.forceMode;
+    let maxBitrate = req.maxBitrate > 0 ? req.maxBitrate : DEFAULT_MAX_BITRATE;
+    if (force === 'transcode' && req.maxBitrate <= 0) {
+      maxBitrate = FORCED_TRANSCODE_BITRATE;
+    }
     const body = buildPlaybackBody(this.config.userId, req, maxBitrate, '');
-    body.DeviceProfile = buildDeviceProfile(maxBitrate);
+    body.DeviceProfile = this.deviceProfile(maxBitrate, force);
+    EmbyProvider.applyForceMode(body, force);
     const p: Record<string, string> = {};
     p['UserId'] = decodeURIComponent(uid);
     p['StartTimeTicks'] = String(body.StartTimeTicks);
     p['IsPlayback'] = 'true';
     p['AutoOpenLiveStream'] = 'true';
     p['MaxStreamingBitrate'] = String(maxBitrate);
+    if (force === 'remux' || force === 'transcode') {
+      // Emby reads these from the query string, Jellyfin from the body; send both.
+      p['EnableDirectPlay'] = String(body.EnableDirectPlay);
+      p['EnableDirectStream'] = String(body.EnableDirectStream);
+      p['AllowVideoStreamCopy'] = String(body.AllowVideoStreamCopy);
+      p['AllowAudioStreamCopy'] = String(body.AllowAudioStreamCopy);
+    }
     if (req.audioIndex >= 0) {
       p['AudioStreamIndex'] = String(req.audioIndex);
     }
@@ -375,6 +393,10 @@ export class EmbyProvider implements MediaProvider {
       '获取播放地址失败');
     const res = parseJson<EmbyPlaybackInfoResult>(r);
     const info = mapPlayback(this.ctx(), item.id, res, '', item.runtimeMs);
+    const src = pickMediaSource(res, '');
+    if (src !== undefined) {
+      applyStreamInfo(info, src, req.audioIndex);
+    }
     if (info.isTranscode) {
       // The server already burns in / switches streams based on the indices sent above.
       return info;
@@ -383,6 +405,36 @@ export class EmbyProvider implements MediaProvider {
       info.url += '&AudioStreamIndex=' + req.audioIndex;
     }
     return info;
+  }
+
+  /** Capability-driven profile; a forced remux always lists the copyable HLS codecs. */
+  private deviceProfile(maxBitrate: number, force: string): Object {
+    const s: AppSettings = Settings.get();
+    const o = new ProfileOptions();
+    o.maxBitrate = maxBitrate;
+    // A forced transcode targets the safest output (H.264/AAC in HLS-TS) regardless of the probed decoders.
+    o.codecMode = s.codecMode === 'compat' || force === 'transcode' ? 'compat' : 'auto';
+    o.preferRemux = force === 'remux' ? true : s.preferRemux;
+    o.kind = this.config.kind === 'jellyfin' ? 'jellyfin' : 'emby';
+    return buildProfile(CodecCaps.entries(), o);
+  }
+
+  /**
+   * 'remux': no direct play or direct stream (both would hand back the original file the player just failed on),
+   * but stream copy stays allowed, so the server repackages into HLS without re-encoding where it can.
+   * 'transcode': no direct play/stream and no video copy.
+   */
+  private static applyForceMode(body: PlaybackInfoBody, force: string): void {
+    if (force === 'remux') {
+      body.EnableDirectPlay = false;
+      body.EnableDirectStream = false;
+      body.AllowVideoStreamCopy = true;
+      body.AllowAudioStreamCopy = true;
+    } else if (force === 'transcode') {
+      body.EnableDirectPlay = false;
+      body.EnableDirectStream = false;
+      body.AllowVideoStreamCopy = false;
+    }
   }
 
   private async report(path: string, item: MediaItem, info: PlaybackInfo, positionMs: number, paused: boolean,

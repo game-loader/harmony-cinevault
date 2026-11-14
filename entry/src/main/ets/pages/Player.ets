@@ -2,21 +2,25 @@ import { router, window, promptAction } from '@kit.ArkUI';
 import { audio, AVVolumePanel } from '@kit.AudioKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { PlayerParams } from '../common/Nav';
-import { MediaItem, PlaybackInfo, PlaybackRequest, SubtitleTrack, AudioTrack } from '../common/Models';
+import { MediaItem, PlaybackInfo, PlaybackRequest, SubtitleTrack, AudioTrack, QualityOption } from '../common/Models';
+import { CodecCaps, CodecEntry, DecoderInfo } from '../media/CodecCaps';
 import { MediaProvider } from '../common/MediaProvider';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
 import { Settings, AppSettings } from '../common/Settings';
 import { SourceStore } from '../common/SourceStore';
 import { AppContext } from '../common/AppContext';
 import { Theme } from '../common/Theme';
-import { PlayerController, PlayerCallbacks, OpenOptions, EmbeddedTrack } from '../player/PlayerController';
+import { PlayerController, PlayerCallbacks, OpenOptions, EmbeddedTrack, NetStats } from '../player/PlayerController';
 import { PlayerOverlay } from '../player/PlayerOverlay';
+import { PlaybackInfoPanel } from '../player/PlaybackInfoPanel';
 import { TrackSheet, SheetItem, SheetStepper } from '../player/TrackSheet';
 import { SubtitleCue, cueTextAt, formatDuration } from '../player/SubtitleParser';
 import { loadSubtitle } from '../player/SubtitleLoader';
 import {
   VideoBox, computeVideoBox, ASPECT_MODES, aspectLabel, SPEEDS, speedLabel, nearestSpeed, pickByLanguage,
-  resolveStartMs, nextInQueue, prevInQueue, clamp, swipeSeekRange, bitrateOptions, BitrateOption, nextCountdown
+  resolveStartMs, nextInQueue, prevInQueue, clamp, swipeSeekRange, bitrateOptions, BitrateOption, nextCountdown,
+  decideFallback, FallbackStep, normCodec, mimeToCodec, CodecMime, InfoRow, TrackStat, DecoderStat, StatsInput,
+  buildInfoRows
 } from '../player/PlayerLogic';
 
 const HIDE_DELAY_MS: number = 4000;
@@ -24,6 +28,10 @@ const REPORT_INTERVAL_MS: number = 10000;
 const NEXT_WINDOW_MS: number = 5000;
 const INTRO_WINDOW_MS: number = 180000;
 const TRANSCODE_BITRATE: number = 8000000;
+/** No first video frame this long after open() / after 'prepared' => treat as failure (network streams only) */
+const STALL_OPEN_MS: number = 25000;
+const STALL_PREPARED_MS: number = 15000;
+const FALLBACK_BANNER_MS: number = 5000;
 
 function key2(kind: string, idx: number): string {
   return kind + ':' + idx;
@@ -71,6 +79,10 @@ struct PlayerPage {
   @State hasPrev: boolean = false;
   @State volumeLevel: number = 0;
   @State showVolumePanel: boolean = false;
+  @State showInfo: boolean = false;
+  @State infoRows: InfoRow[] = [];
+  @State fallbackBanner: string = '';
+  @State srStatus: string = 'off';
 
   private params: PlayerParams = new PlayerParams();
   private settings: AppSettings = new AppSettings();
@@ -102,6 +114,27 @@ struct PlayerPage {
   private tracksInitDone: boolean = false;
   private disposed: boolean = false;
   private loadToken: number = 0;
+  // automatic fallback chain (per item)
+  private fbTried: string[] = [];
+  private fbHandledOpen: number = -1;
+  private openCount: number = 0;
+  private curUrl: string = '';
+  /** index into info.qualities of the stream being played, -1 when info.url is not in qualities */
+  private curQuality: number = -1;
+  private firstFrame: boolean = false;
+  private stallTimer: number = -1;
+  private fbBannerTimer: number = -1;
+  // selection carried across a fallback re-request
+  private restoreSubKey: string = '';
+  private restoreAudioLang: string = '';
+  private restoreSubLang: string = '';
+  private restoreSubOff: boolean = false;
+  // info panel
+  private infoTimer: number = -1;
+  private infoBusy: boolean = false;
+  private codecMimes: CodecMime[] | undefined = undefined;
+  /** subtitles were explicitly off before a fallback switch: don't adopt a track the new player auto-selected */
+  private userSubOff: boolean = false;
 
   aboutToAppear(): void {
     const p = router.getParams() as PlayerParams;
@@ -122,6 +155,9 @@ struct PlayerPage {
     clearTimeout(this.hideTimer);
     clearTimeout(this.bannerTimer);
     clearTimeout(this.hintTimer);
+    clearTimeout(this.stallTimer);
+    clearTimeout(this.fbBannerTimer);
+    clearInterval(this.infoTimer);
     this.stopSubtitleTicker();
     this.reportStoppedNow();
     this.ctl.release();
@@ -222,6 +258,12 @@ struct PlayerPage {
     this.bufferedMs = 0;
     this.videoW = 0;
     this.videoH = 0;
+    this.fbTried = [];
+    this.fbHandledOpen = -1;
+    this.curQuality = -1;
+    this.fallbackBanner = '';
+    this.userSubOff = false;
+    this.clearRestore();
     let item: MediaItem;
     try {
       item = await prov.getItem(itemId);
@@ -294,12 +336,18 @@ struct PlayerPage {
       return;
     }
     this.info = info;
+    this.curQuality = info.qualities.findIndex((q: QualityOption) => q.url === info.url);
     if (info.durationMs > 0) {
       this.durationMs = info.durationMs;
     }
     this.chooseServerTracks(info);
     this.openUrl(info.url, info.headers, startMs);
-    this.autoPickExternalSubtitle(info);
+    if (this.restoreSubKey.length > 0) {
+      this.restoreSubtitle(info);
+      this.restoreSubKey = '';
+    } else {
+      this.autoPickExternalSubtitle(info);
+    }
   }
 
   /** If the server transcodes, audio must be picked server-side; re-request once when the preferred language differs. */
@@ -321,12 +369,18 @@ struct PlayerPage {
     opt.startMs = startMs;
     opt.speed = this.speed;
     opt.autoPlay = true;
-    opt.preferredAudioLang = this.settings.preferredAudioLang;
-    opt.preferredSubtitleLang = this.settings.preferredSubtitleLang;
+    opt.preferredAudioLang = this.restoreAudioLang.length > 0 ? this.restoreAudioLang : this.settings.preferredAudioLang;
+    opt.preferredSubtitleLang = this.restoreSubLang.length > 0 ? this.restoreSubLang : this.settings.preferredSubtitleLang;
+    opt.superResolution = this.settings.superResolution;
+    opt.preferHdr = this.settings.preferHdr;
     const lower = url.toLowerCase();
     opt.isHls = lower.indexOf('.m3u8') >= 0 || (this.info !== undefined && this.info.container.toLowerCase() === 'hls');
     this.loadingText = '正在缓冲…';
     this.positionMs = startMs;
+    this.openCount++;
+    this.curUrl = url;
+    this.firstFrame = false;
+    this.armStall(STALL_OPEN_MS);
     if (!this.surfaceReady) {
       this.pendingOpen = opt;
       return;
@@ -367,11 +421,19 @@ struct PlayerPage {
         this.videoH = h;
       }
     };
+    cb.onFirstFrame = () => {
+      this.firstFrame = true;
+      clearTimeout(this.stallTimer);
+    };
+    cb.onSuperRes = (st: string) => {
+      this.srStatus = st;
+    };
     cb.onSeekDone = (ms: number) => {
       this.buffering = false;
       this.syncSubtitle();
     };
     cb.onError = (m: string) => this.onPlayerError(m);
+    cb.onWarn = (m: string) => this.toast(m);
     cb.onTracks = (t: EmbeddedTrack[]) => this.onTracks(t);
     cb.onSubtitle = (text: string, startMs: number, durationMs: number) => {
       // AVPlayer-rendered text: embedded tracks and header-less external URLs
@@ -401,6 +463,9 @@ struct PlayerPage {
       this.reportProgressNow(true);
     } else if (s === 'prepared') {
       this.loading = false;
+      if (!this.firstFrame) {
+        this.armStall(STALL_PREPARED_MS);
+      }
     } else if (s === 'completed') {
       this.stopSubtitleTicker();
       this.onCompleted();
@@ -431,6 +496,11 @@ struct PlayerPage {
   }
 
   private onFirstPlay(): void {
+    if (this.videoW > 0 && this.videoH > 0) {
+      // decoder reported a picture size and playback runs: not a stall even if startRenderFrame never arrives
+      this.firstFrame = true;
+      clearTimeout(this.stallTimer);
+    }
     if (this.started) {
       return;
     }
@@ -446,10 +516,226 @@ struct PlayerPage {
   }
 
   private onPlayerError(m: string): void {
+    if (this.fbHandledOpen === this.openCount) {
+      // a second error event for an open that is already being replaced
+      return;
+    }
+    this.fbHandledOpen = this.openCount;
+    clearTimeout(this.stallTimer);
     this.playing = false;
     this.stopSubtitleTicker();
     this.reportProgressNow(true);
+    if (this.tryFallback(m)) {
+      return;
+    }
     this.fail(m);
+  }
+
+  // ---------- automatic fallback ----------
+
+  private armStall(ms: number): void {
+    clearTimeout(this.stallTimer);
+    if (!/^https?:\/\//i.test(this.curUrl)) {
+      return;
+    }
+    const open = this.openCount;
+    this.stallTimer = setTimeout(() => this.onStall(open), ms);
+  }
+
+  /** No video frame in time: switch like on an error, but keep waiting when nothing is left to try. */
+  private onStall(open: number): void {
+    if (open !== this.openCount || this.firstFrame || this.disposed || this.errorMsg.length > 0 ||
+      this.fbHandledOpen === open || this.ctl.state === 'paused') {
+      return;
+    }
+    const step = this.nextFallback();
+    if (step.action === 'none') {
+      return;
+    }
+    console.warn(`[Player] no video frame after open, fallback ${step.key}`);
+    this.fbHandledOpen = open;
+    this.runFallback(step);
+  }
+
+  /** Quality index of the stream now playing (Quark-style sources), -1 if unknown. */
+  private playingQuality(): number {
+    const info = this.info;
+    if (info === undefined || info.qualities.length === 0) {
+      return -1;
+    }
+    if (this.curQuality >= 0) {
+      return this.curQuality;
+    }
+    return info.qualities.findIndex((q: QualityOption) => q.url === info.url);
+  }
+
+  /** Delivery mode of what is actually playing (a Quark transcode quality counts as 'transcode'). */
+  private effectiveMode(): string {
+    const info = this.info;
+    if (info === undefined) {
+      return 'direct';
+    }
+    const qi = this.playingQuality();
+    if (qi >= 0) {
+      return info.qualities[qi].label === '原画' ? 'direct' : 'transcode';
+    }
+    return info.deliveryMode;
+  }
+
+  private nextFallback(): FallbackStep {
+    const info = this.info;
+    if (info === undefined || this.item === undefined) {
+      return new FallbackStep();
+    }
+    const labels: string[] = info.qualities.map((q: QualityOption) => q.label);
+    // record the attempt that just failed so it is never retried automatically
+    const cur = labels.length > 0 ? 'q:' + this.playingQuality() : info.deliveryMode;
+    const tried: string[] = this.fbTried.slice();
+    if (tried.indexOf(cur) < 0) {
+      tried.push(cur);
+    }
+    return decideFallback(info.deliveryMode, labels, this.playingQuality(), tried);
+  }
+
+  private tryFallback(m: string): boolean {
+    const step = this.nextFallback();
+    if (step.action === 'none') {
+      return false;
+    }
+    console.warn(`[Player] playback failed (${m}), fallback ${step.key}`);
+    this.runFallback(step);
+    return true;
+  }
+
+  private async runFallback(step: FallbackStep): Promise<void> {
+    const info = this.info;
+    if (info === undefined) {
+      return;
+    }
+    this.fbTried.push(step.key);
+    const pos = this.currentPos() > 0 ? this.currentPos() : this.req.startMs;
+    this.showFallbackBanner(step.banner);
+    this.errorMsg = '';
+    this.loading = true;
+    this.loadingText = '正在切换播放方式…';
+    if (step.action === 'quality') {
+      // same Quark item/session: just a different link, like a manual quality switch
+      const q = info.qualities[step.qualityIndex];
+      this.curQuality = step.qualityIndex;
+      this.qualityKey = 'q:' + step.qualityIndex;
+      this.captureSelection(false);
+      this.openUrl(q.url, Object.keys(q.headers).length > 0 ? q.headers : info.headers, pos);
+      if (this.restoreSubKey.length > 0) {
+        this.restoreSubtitle(info);
+        this.restoreSubKey = '';
+      }
+      return;
+    }
+    this.captureSelection(true);
+    this.stopSessionForSwitch(pos);
+    this.req.forceMode = step.action;
+    await this.fetchAndOpen(pos, this.loadToken);
+  }
+
+  /** End the server play session (and its encode job) before a new one is started. */
+  private stopSessionForSwitch(pos: number): void {
+    const prov = this.provider;
+    const item = this.item;
+    const info = this.info;
+    if (this.started) {
+      this.reportStoppedNow();
+      return;
+    }
+    if (prov !== undefined && item !== undefined && info !== undefined &&
+      (info.deliveryMode !== 'direct' || info.isTranscode) && info.playSessionId.length > 0) {
+      // never reached first play, but the server may already be remuxing / transcoding for it
+      prov.reportStopped(item, info, pos).catch((e: Error) => {
+        console.warn(`[Player] reportStopped (switch) failed: ${e.message}`);
+      });
+    }
+  }
+
+  private clearRestore(): void {
+    this.restoreSubKey = '';
+    this.restoreAudioLang = '';
+    this.restoreSubLang = '';
+    this.restoreSubOff = false;
+  }
+
+  /** Remember audio / subtitle choice so the replacement stream starts with the same ones. */
+  private captureSelection(serverRequest: boolean): void {
+    this.clearRestore();
+    const info = this.info;
+    if (info === undefined) {
+      return;
+    }
+    let audioLang = '';
+    let audioName = '';
+    if (this.audioKey.startsWith('emb:')) {
+      const idx = Number(this.audioKey.substring(4));
+      const t = this.embeddedAudio.find((a: EmbeddedTrack) => a.index === idx);
+      if (t !== undefined) {
+        audioLang = t.language;
+        audioName = t.name;
+      }
+    } else if (this.audioKey.startsWith('srv:')) {
+      const idx = Number(this.audioKey.substring(4));
+      const a = info.audioTracks.find((x: AudioTrack) => x.index === idx);
+      if (a !== undefined) {
+        audioLang = a.language;
+        audioName = a.title;
+      }
+    }
+    this.restoreAudioLang = audioLang;
+    if (serverRequest && this.req.audioIndex < 0 && audioLang.length > 0 && info.audioTracks.length > 1) {
+      // embedded index is container specific: map to the server stream index by language
+      const i = pickByLanguage(info.audioTracks.map((a: AudioTrack) => a.language),
+        info.audioTracks.map((a: AudioTrack) => a.title), audioLang.length > 0 ? audioLang : audioName);
+      if (i >= 0) {
+        this.req.audioIndex = info.audioTracks[i].index;
+        this.audioKey = 'srv:' + info.audioTracks[i].index;
+      }
+    }
+    if (this.subKey.startsWith('ext:') || this.subKey.startsWith('url:')) {
+      this.restoreSubKey = this.subKey;
+    } else if (this.subKey.startsWith('emb:')) {
+      const idx = Number(this.subKey.substring(4));
+      const t = this.embeddedSubs.find((x: EmbeddedTrack) => x.index === idx);
+      this.restoreSubLang = t !== undefined ? t.language : '';
+      this.restoreSubKey = 'emb';
+    } else if (this.subKey === 'off') {
+      this.restoreSubOff = true;
+      this.restoreSubKey = 'off';
+    }
+    // srv: subtitles stay in this.req.subtitleIndex
+    // the new stream reports its own embedded tracks: re-run the initial track pick with the captured languages
+    this.tracksInitDone = false;
+    this.embeddedAudio = [];
+    this.embeddedSubs = [];
+    this.externalSubActive = false;
+    this.cues = [];
+    this.subtitleText = '';
+    this.subKey = this.subKey.startsWith('srv:') ? this.subKey : 'off';
+  }
+
+  private restoreSubtitle(info: PlaybackInfo): void {
+    const k = this.restoreSubKey;
+    if (k.startsWith('ext:') || k.startsWith('url:')) {
+      const idx = Number(k.substring(4));
+      const t = info.subtitles.find((x: SubtitleTrack) => x.index === idx && x.isExternal && x.url.length > 0);
+      if (t !== undefined) {
+        this.useExternalSubtitle(t);
+      }
+    }
+    // 'emb' / 'off' are handled in onTracks when the new player reports its tracks
+  }
+
+  private showFallbackBanner(text: string): void {
+    this.fallbackBanner = text;
+    clearTimeout(this.fbBannerTimer);
+    this.fbBannerTimer = setTimeout(() => {
+      this.fallbackBanner = '';
+    }, FALLBACK_BANNER_MS);
   }
 
   // ---------- subtitles (own rendering) ----------
@@ -571,19 +857,30 @@ struct PlayerPage {
     }
     if (!this.tracksInitDone) {
       this.tracksInitDone = true;
+      // after a fallback switch the captured choice wins over the settings
+      const audioPref = this.restoreAudioLang.length > 0 ? this.restoreAudioLang : this.settings.preferredAudioLang;
+      const subPref = this.restoreSubLang.length > 0 ? this.restoreSubLang : this.settings.preferredSubtitleLang;
+      const subOff = this.restoreSubOff;
+      this.userSubOff = subOff;
+      if (subOff && this.embeddedSubs.length > 0) {
+        await this.disableEmbeddedSubs();
+      }
+      this.restoreAudioLang = '';
+      this.restoreSubLang = '';
+      this.restoreSubOff = false;
       // preferred embedded audio
       if (this.embeddedAudio.length > 1 && !this.audioKey.startsWith('srv:')) {
         const i = pickByLanguage(this.embeddedAudio.map((t: EmbeddedTrack) => t.language),
-          this.embeddedAudio.map((t: EmbeddedTrack) => t.name), this.settings.preferredAudioLang);
+          this.embeddedAudio.map((t: EmbeddedTrack) => t.name), audioPref);
         if (i >= 0 && (curAudio === undefined || curAudio.index !== this.embeddedAudio[i].index)) {
           this.audioKey = 'emb:' + this.embeddedAudio[i].index;
           await this.ctl.selectTrack(this.embeddedAudio[i].index);
         }
       }
       // embedded subtitle only when no external one was chosen
-      if (this.subKey === 'off' && this.embeddedSubs.length > 0) {
+      if (this.subKey === 'off' && this.embeddedSubs.length > 0 && !subOff) {
         const j = pickByLanguage(this.embeddedSubs.map((t: EmbeddedTrack) => t.language),
-          this.embeddedSubs.map((t: EmbeddedTrack) => t.name), this.settings.preferredSubtitleLang);
+          this.embeddedSubs.map((t: EmbeddedTrack) => t.name), subPref);
         if (j >= 0) {
           this.subKey = 'emb:' + this.embeddedSubs[j].index;
           await this.ctl.selectTrack(this.embeddedSubs[j].index);
@@ -591,7 +888,7 @@ struct PlayerPage {
       }
     }
     const curSub = this.embeddedSubs.find((t: EmbeddedTrack) => sel.indexOf(t.index) >= 0);
-    if (curSub !== undefined && this.subKey === 'off') {
+    if (curSub !== undefined && this.subKey === 'off' && !this.userSubOff) {
       this.subKey = 'emb:' + curSub.index;
     }
   }
@@ -751,11 +1048,18 @@ struct PlayerPage {
       this.loadItem(this.params.itemId, this.params.startMs);
       return;
     }
+    // new getPlayback = new play session: close the old one so reportStart fires again
+    this.stopSessionForSwitch(pos);
     this.fetchAndOpen(pos, this.loadToken);
   }
 
   private retryTranscode(): void {
     const pos = this.ctl.positionMs > 0 ? this.ctl.positionMs : this.req.startMs;
+    if (this.fbTried.indexOf('transcode') < 0) {
+      this.fbTried.push('transcode');
+    }
+    this.stopSessionForSwitch(pos);
+    this.req.forceMode = 'transcode';
     this.req.maxBitrate = TRANSCODE_BITRATE;
     this.qualityKey = 'br:' + TRANSCODE_BITRATE;
     this.errorMsg = '';
@@ -1014,6 +1318,10 @@ struct PlayerPage {
       this.playNext();
       return;
     }
+    if (key === 'info') {
+      this.toggleInfo();
+      return;
+    }
     this.sheet = key;
     this.showControls = false;
     clearTimeout(this.hideTimer);
@@ -1025,6 +1333,148 @@ struct PlayerPage {
     }
   }
 
+  // ---------- 播放信息 panel ----------
+
+  private toggleInfo(): void {
+    this.sheet = '';
+    this.showInfo = !this.showInfo;
+    clearInterval(this.infoTimer);
+    this.infoTimer = -1;
+    if (this.showInfo) {
+      this.refreshInfo();
+      this.infoTimer = setInterval(() => this.refreshInfo(), 1000);
+    }
+  }
+
+  private probeMimes(): CodecMime[] {
+    const cached = this.codecMimes;
+    if (cached !== undefined) {
+      return cached;
+    }
+    const list: CodecMime[] = [];
+    try {
+      CodecCaps.entries().forEach((e: CodecEntry) => list.push(new CodecMime(e.codec, e.mime)));
+    } catch (err) {
+      console.warn(`[Player] CodecCaps.load failed: ${(err as Error).message}`);
+    }
+    if (list.length > 0) {
+      this.codecMimes = list;
+    }
+    return list;
+  }
+
+  private decoderStat(codec: string): DecoderStat {
+    const d = new DecoderStat();
+    d.codec = codec;
+    if (codec.length === 0) {
+      return d;
+    }
+    try {
+      const dec: DecoderInfo | undefined = CodecCaps.decoderFor(codec);
+      if (dec !== undefined) {
+        d.known = true;
+        d.hw = dec.hw;
+        d.name = dec.name;
+      }
+    } catch (err) {
+      console.warn(`[Player] CodecCaps.decoderFor failed: ${(err as Error).message}`);
+    }
+    return d;
+  }
+
+  private async refreshInfo(): Promise<void> {
+    if (this.infoBusy || !this.showInfo) {
+      return;
+    }
+    this.infoBusy = true;
+    try {
+      const tracks: EmbeddedTrack[] = await this.ctl.trackList();
+      const selected: number[] = await this.ctl.selectedTracks();
+      const net: NetStats = await this.ctl.netStats();
+      if (!this.showInfo || this.disposed) {
+        return;
+      }
+      this.infoRows = buildInfoRows(this.statsInput(tracks, selected, net));
+    } finally {
+      this.infoBusy = false;
+    }
+  }
+
+  private statsInput(tracks: EmbeddedTrack[], selected: number[], net: NetStats): StatsInput {
+    const s = new StatsInput();
+    const info = this.info;
+    const mimes = this.probeMimes();
+    let vMime = '';
+    let aMime = '';
+    const sel: TrackStat[] = [];
+    const audios = tracks.filter((t: EmbeddedTrack) => t.type === 0);
+    let curAudio = audios.find((t: EmbeddedTrack) => selected.indexOf(t.index) >= 0);
+    if (curAudio === undefined && audios.length > 0) {
+      curAudio = audios[0];
+    }
+    const curAudioIdx = curAudio !== undefined ? curAudio.index : -1;
+    for (let i = 0; i < tracks.length; i++) {
+      const t = tracks[i];
+      if (t.type !== 1 && !(t.type === 0 && t.index === curAudioIdx)) {
+        continue;
+      }
+      const ts = new TrackStat();
+      ts.type = t.type;
+      ts.mime = t.codec;
+      ts.width = t.width;
+      ts.height = t.height;
+      ts.frameRate = t.frameRate;
+      ts.hdrType = t.hdrType;
+      ts.bitrate = t.bitrate;
+      ts.channels = t.channels;
+      ts.sampleRate = t.sampleRate;
+      ts.language = t.language;
+      if (t.type === 1) {
+        if (vMime.length === 0) {
+          vMime = t.codec;
+        }
+        sel.push(ts);
+      } else {
+        aMime = t.codec;
+        sel.push(ts);
+      }
+    }
+    s.tracks = sel;
+    if (info !== undefined) {
+      s.deliveryMode = this.effectiveMode();
+      const qi = this.playingQuality();
+      s.modeNote = qi >= 0 ? (s.deliveryMode === 'transcode' ? '夸克云端 ' + info.qualities[qi].label : '夸克原画') : '';
+      s.transcodeReasons = info.transcodeReasons;
+      s.container = info.container;
+      s.videoCodec = info.videoCodec;
+      s.audioCodec = info.audioCodec;
+      s.videoWidth = info.videoWidth;
+      s.videoHeight = info.videoHeight;
+      s.videoRange = info.videoRange;
+      s.bitrate = info.bitrate;
+    }
+    // the decoder sees the delivered stream: prefer the track mime, fall back to the server's source codec
+    let vc = mimeToCodec(vMime, mimes);
+    if (vc.length === 0 && s.deliveryMode !== 'transcode') {
+      vc = normCodec(s.videoCodec);
+    }
+    let ac = mimeToCodec(aMime, mimes);
+    if (ac.length === 0 && s.deliveryMode !== 'transcode') {
+      ac = normCodec(s.audioCodec);
+    }
+    s.videoDecoder = this.decoderStat(vc);
+    s.audioDecoder = this.decoderStat(ac);
+    s.superRes = this.srStatus;
+    s.renderW = this.videoW;
+    s.renderH = this.videoH;
+    s.downloadRate = net.downloadRate;
+    s.avgDownloadRate = net.avgDownloadRate;
+    s.bufferSec = net.bufferSec;
+    s.downloading = net.downloading;
+    s.serverIp = net.serverIp;
+    return s;
+  }
+
   private sheetTitle(): string {
     switch (this.sheet) {
       case 'speed': return '播放速度';
@@ -1033,6 +1483,7 @@ struct PlayerPage {
       case 'subtitle': return '字幕';
       case 'aspect': return '画面比例';
       case 'episodes': return '选集';
+      case 'more': return '更多';
       default: return '';
     }
   }
@@ -1155,6 +1606,8 @@ struct PlayerPage {
       case 'aspect':
         return ASPECT_MODES.map((m: string) => new SheetItem('as:' + m, aspectLabel(m), '', m === this.aspect));
       case 'episodes': return this.episodeItems();
+      case 'more':
+        return [new SheetItem('more:info', '播放信息', '解码方式、编码、码率、缓冲', this.showInfo)];
       default: return [];
     }
   }
@@ -1188,6 +1641,8 @@ struct PlayerPage {
       await this.pickAudio(kind, val);
     } else if (sheet === 'subtitle') {
       await this.pickSubtitle(kind, val);
+    } else if (sheet === 'more' && kind === 'more' && val === 'info') {
+      this.toggleInfo();
     }
   }
 
@@ -1199,8 +1654,10 @@ struct PlayerPage {
       this.qualityKey = 'q:' + i;
       this.showHint('正在切换画质…');
       if (i < 0) {
+        this.curQuality = info.qualities.findIndex((x: QualityOption) => x.url === info.url);
         this.openUrl(info.url, info.headers, pos);
       } else if (i < info.qualities.length) {
+        this.curQuality = i;
         const q = info.qualities[i];
         this.openUrl(q.url, Object.keys(q.headers).length > 0 ? q.headers : info.headers, pos);
       }
@@ -1212,6 +1669,10 @@ struct PlayerPage {
         return;
       }
       this.req.maxBitrate = br;
+      if (br === 0) {
+        // explicit 原画 choice: let the profile decide again instead of a forced remux / transcode
+        this.req.forceMode = '';
+      }
       this.qualityKey = 'br:' + br;
       this.showHint('正在切换画质…');
       this.reportStoppedNow();
@@ -1329,7 +1790,7 @@ struct PlayerPage {
           .backgroundColor(Theme.accent)
           .fontColor(Color.White)
           .onClick(() => this.retry())
-        if (this.info !== undefined && this.req.maxBitrate !== TRANSCODE_BITRATE) {
+        if (this.info !== undefined && this.effectiveMode() !== 'transcode') {
           Button('尝试转码播放')
             .backgroundColor(Theme.surface2)
             .fontColor(Color.White)
@@ -1363,6 +1824,11 @@ struct PlayerPage {
           })
           .width(this.videoBox().width > 0 ? this.videoBox().width : '100%')
           .height(this.videoBox().height > 0 ? this.videoBox().height : '100%')
+          .onAreaChange((oldV: Area, newV: Area) => {
+            // on-screen surface size in px for setVideoWindowSize (super resolution); follows rotation / aspect
+            const ui = this.getUIContext();
+            this.ctl.setDisplaySize(ui.vp2px(Number(newV.width)), ui.vp2px(Number(newV.height)));
+          })
       }
       .width('100%')
       .height('100%')
@@ -1539,6 +2005,38 @@ struct PlayerPage {
         }
         .width(1)
         .height(1)
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      // 播放信息 (top-left)
+      if (this.showInfo) {
+        Column() {
+          PlaybackInfoPanel({
+            rows: this.infoRows,
+            onClose: () => this.toggleInfo()
+          })
+        }
+        .width('100%')
+        .height('100%')
+        .alignItems(HorizontalAlign.Start)
+        .padding({ left: 24, top: this.showControls && !this.locked ? 80 : 24 })
+        .hitTestBehavior(HitTestMode.Transparent)
+      }
+
+      // automatic fallback notice (top-center)
+      if (this.fallbackBanner.length > 0) {
+        Column() {
+          Text(this.fallbackBanner)
+            .fontSize(14)
+            .fontColor(Color.White)
+            .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+            .borderRadius(18)
+            .backgroundColor('#CC000000')
+        }
+        .width('100%')
+        .height('100%')
+        .alignItems(HorizontalAlign.Center)
+        .padding({ top: 72 })
         .hitTestBehavior(HitTestMode.Transparent)
       }
 

@@ -15,9 +15,10 @@ import {
   TMDB_LANG_OPTIONS, TMDB_IMAGE_BASE_OPTIONS, indexOfNumber, indexOfString, kindLabel, sourceStatusText,
   tmdbKeyLooksValid
 } from '../components/settings/SettingsLogic';
+import { CODEC_MODE_OPTIONS, codecModeIndex } from '../components/settings/CodecInfoLogic';
 import { ScanProgressDialog } from '../components/settings/ScanProgressDialog';
 
-const APP_VERSION: string = '1.0.0';
+const APP_VERSION: string = '1.1.0';
 
 class SelectItem implements SelectOption {
   value: ResourceStr;
@@ -406,7 +407,7 @@ struct SettingsPage {
               .backgroundColor(Theme.surface2).borderRadius(4)
               .padding({ left: 6, right: 6, top: 2, bottom: 2 }).margin({ left: 8 })
           }
-          Text(`${sourceStatusText(c.kind, c.enabled, c.token, c.cookie)}${c.baseUrl ? ' · ' + c.baseUrl : ''}`)
+          Text(`${sourceStatusText(c.kind, c.enabled, c.token, c.cookie, c.quarkAuth, c.quarkRefreshToken)}${c.baseUrl ? ' · ' + c.baseUrl : ''}`)
             .fontSize(12).fontColor(Theme.text3).maxLines(1)
             .textOverflow({ overflow: TextOverflow.Ellipsis }).margin({ top: 3 })
         }
@@ -472,7 +473,7 @@ struct SettingsPage {
           ListItem() {
             this.SourceRow(c)
           }
-        }, (c: SourceConfig) => `${c.id}-${c.enabled}-${c.name}-${c.token.length}-${c.cookie.length}-${c.rootFid}`)
+        }, (c: SourceConfig) => `${c.id}-${c.enabled}-${c.name}-${c.token.length}-${c.cookie.length}-${c.quarkAuth}-${c.quarkRefreshToken.length}-${c.rootFid}`)
         ListItem() { this.NavRow('添加 Emby 服务器', '', () => Nav.editServer('', 'emby')) }
         ListItem() { this.NavRow('添加 Jellyfin 服务器', '', () => Nav.editServer('', 'jellyfin')) }
         ListItem() { this.NavRow('添加夸克网盘', '', () => Nav.quarkLogin('')) }
@@ -549,6 +550,23 @@ struct SettingsPage {
         ListItem() {
           this.SliderRow('跳过片头', Math.round(this.s.skipIntroMs / 1000), 0, 180, 5, '秒',
             (v: number) => { this.update((s: AppSettings) => { s.skipIntroMs = v * 1000; }); })
+        }
+        ListItem() { this.NavRow('解码能力', '查看本机硬件/软件解码器', () => Nav.codecInfo()) }
+        ListItem() {
+          this.SelectRow('编码兼容模式', strOpts(CODEC_MODE_OPTIONS), codecModeIndex(this.s.codecMode),
+            (i: number) => { this.update((s: AppSettings) => { s.codecMode = CODEC_MODE_OPTIONS[i].value; }); })
+        }
+        ListItem() {
+          this.ToggleRow('优先转封装', '容器不支持时让服务器只换封装、不重新编码，画质无损且几乎不占服务器 CPU',
+            this.s.preferRemux, (v: boolean) => { this.update((s: AppSettings) => { s.preferRemux = v; }); })
+        }
+        ListItem() {
+          this.ToggleRow('超分辨率', '低于 1080p 的视频用 GPU/NPU 超分增强', this.s.superResolution,
+            (v: boolean) => { this.update((s: AppSettings) => { s.superResolution = v; }); })
+        }
+        ListItem() {
+          this.ToggleRow('HDR 输出', '片源为 HDR 时按 HDR 输出（需屏幕支持）', this.s.preferHdr,
+            (v: boolean) => { this.update((s: AppSettings) => { s.preferHdr = v; }); })
         }
       }
 

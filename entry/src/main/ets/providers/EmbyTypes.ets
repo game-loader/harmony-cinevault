@@ -42,6 +42,12 @@ export interface EmbyMediaStream {
   Width?: number;
   Height?: number;
   BitRate?: number;
+  BitDepth?: number;
+  Profile?: string;
+  VideoRange?: string;          // Emby/Jellyfin: SDR | HDR
+  VideoRangeType?: string;      // Jellyfin 10.9+: SDR | HDR10 | HDR10Plus | HLG | DOVI | DOVIWithHDR10 ...
+  ColorTransfer?: string;       // smpte2084 | arib-std-b67 | bt709
+  ExtendedVideoType?: string;   // Emby 4.8: None | Hdr10 | Hdr10Plus | HyperLogGamma | DolbyVision
 }
 
 export interface EmbyMediaSource {
@@ -60,6 +66,7 @@ export interface EmbyMediaSource {
   TranscodingUrl?: string;
   TranscodingSubProtocol?: string;
   TranscodingContainer?: string;
+  TranscodeReasons?: string[];
   DirectStreamUrl?: string;
   DefaultAudioStreamIndex?: number;
   DefaultSubtitleStreamIndex?: number;

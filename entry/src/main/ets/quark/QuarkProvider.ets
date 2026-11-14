@@ -7,7 +7,8 @@ import { SourceStore } from '../common/SourceStore';
 import { LibraryDb, LocalFile } from '../library/LibraryDb';
 import { FileLister, ScanProgress } from '../scraper/Scraper';
 import { QuarkApi } from './QuarkApi';
-import { QuarkFile, QuarkQuality, QuarkLink } from './QuarkTypes';
+import { QuarkTvApi } from './QuarkTvApi';
+import { QuarkFile, QuarkQuality, QuarkLink, QuarkDrive } from './QuarkTypes';
 import { isVideoName, isSubtitleName, isSkippedFolder, subtitleMatches, subtitleLang, fileExt, baseName } from './CookieUtil';
 
 export const VIEW_MOVIES: string = 'quark-movies';
@@ -20,12 +21,14 @@ class DirTask {
   depth: number = 0;
 }
 
-/** Shared per-source client so cookie refresh state survives provider re-creation. */
+/** Shared per-source client so cookie / token refresh state survives provider re-creation. */
 class ApiHolder {
-  api: QuarkApi;
+  drive: QuarkDrive;
+  web: QuarkApi | undefined = undefined;
+  tv: QuarkTvApi | undefined = undefined;
   persistTimer: number = -1;
-  constructor(api: QuarkApi) {
-    this.api = api;
+  constructor(drive: QuarkDrive) {
+    this.drive = drive;
   }
 }
 
@@ -42,20 +45,66 @@ export class QuarkProvider implements MediaProvider, FileLister {
     this.config = cfg;
   }
 
-  /** The drive client for this source (cookie kept in sync with SourceStore). */
-  get api(): QuarkApi {
+  private isTv(): boolean {
+    return this.config.quarkAuth === 'tv';
+  }
+
+  /** Drive backend for this source: TV client when quarkAuth is 'tv', else the web-cookie client. */
+  get drive(): QuarkDrive {
+    if (this.isTv()) {
+      return this.tvApi();
+    }
+    return this.webApi();
+  }
+
+  /** TV client; reused while its device id matches and it has held the stored refresh token. */
+  private tvApi(): QuarkTvApi {
+    const h = QuarkProvider.holders.get(this.config.id);
+    const cfg = this.config;
+    if (h !== undefined && h.tv !== undefined && h.tv.deviceId === cfg.quarkDeviceId &&
+      h.tv.knownTokens.indexOf(cfg.quarkRefreshToken) >= 0) {
+      return h.tv;
+    }
+    const tv = new QuarkTvApi(cfg.quarkDeviceId, cfg.quarkRefreshToken);
+    const holder = new ApiHolder(tv);
+    holder.tv = tv;
+    const sourceId = cfg.id;
+    tv.onRefreshTokenChanged = (rt: string) => {
+      QuarkProvider.persistRefreshToken(sourceId, rt);
+    };
+    QuarkProvider.holders.set(cfg.id, holder);
+    return tv;
+  }
+
+  /** The web-cookie client (cookie kept in sync with SourceStore). */
+  private webApi(): QuarkApi {
     let h = QuarkProvider.holders.get(this.config.id);
-    if (h === undefined || (h.api.cookie !== this.config.cookie && !QuarkProvider.isNewer(h.api.cookie, this.config.cookie))) {
+    if (h === undefined || h.web === undefined ||
+      (h.web.cookie !== this.config.cookie && !QuarkProvider.isNewer(h.web.cookie, this.config.cookie))) {
       const api = new QuarkApi(this.config.cookie);
       h = new ApiHolder(api);
+      h.web = api;
       const holder = h;
       const sourceId = this.config.id;
       api.onCookieChanged = (c: string) => {
         QuarkProvider.schedulePersist(sourceId, holder, c);
       };
       QuarkProvider.holders.set(this.config.id, h);
+      return api;
     }
-    return h.api;
+    return h.web;
+  }
+
+  /** Store a rotated refresh token right away (losing it would force a new QR login). */
+  private static persistRefreshToken(sourceId: string, rt: string): void {
+    const cfg = SourceStore.get(sourceId);
+    if (cfg === undefined || cfg.quarkRefreshToken === rt) {
+      return;
+    }
+    cfg.quarkRefreshToken = rt;
+    SourceStore.upsert(cfg).catch((e: Error) => {
+      console.warn('[quark] persist refresh token failed: ' + e.message);
+    });
   }
 
   /** True when `live` only differs from the stored cookie by a rolled __puus (a pending persist). */
@@ -93,10 +142,18 @@ export class QuarkProvider implements MediaProvider, FileLister {
   // ---------------- connection ----------------
 
   async connect(): Promise<void> {
+    if (this.isTv()) {
+      if (!this.config.quarkRefreshToken || !this.config.quarkDeviceId) {
+        throw new Error('尚未登录夸克网盘');
+      }
+      await this.tvApi().accountName();
+      await LibraryDb.open();
+      return;
+    }
     if (!this.config.cookie) {
       throw new Error('尚未登录夸克网盘');
     }
-    const api = this.api;
+    const api = this.webApi();
     await api.accountInfo();
     await api.ensureFresh();
     await LibraryDb.open();
@@ -331,7 +388,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
   }
 
   async getPlayback(item: MediaItem, req: PlaybackRequest): Promise<PlaybackInfo> {
-    const api = this.api;
+    const api = this.drive;
     await api.ensureFresh();
     const file = await this.resolveFile(item);
     const info = new PlaybackInfo();
@@ -356,7 +413,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
     }));
     await Promise.all(tasks);
 
-    const playHdr = QuarkApi.playHeaders(api.cookie);
+    const playHdr = api.streamHeaders();
     const origLink = original as QuarkLink | undefined;
     if (origLink !== undefined) {
       const o = new QualityOption();
@@ -392,6 +449,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
     info.url = chosen.url;
     info.headers = chosen.headers;
     info.isTranscode = chosen.label !== '原画';
+    info.deliveryMode = info.isTranscode ? 'transcode' : 'direct';
     if (info.isTranscode) {
       info.container = chosen.url.indexOf('.m3u8') >= 0 ? 'm3u8' : 'mp4';
     }
@@ -433,7 +491,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
   }
 
   private async findSubtitles(file: LocalFile): Promise<SubtitleTrack[]> {
-    const api = this.api;
+    const api = this.drive;
     const siblings = await api.listAll(file.parentFid);
     const subs = siblings.filter((f: QuarkFile) => !f.isDir && isSubtitleName(f.name) && subtitleMatches(file.name, f.name));
     // a lone subtitle in a folder with a single video also belongs to it
@@ -611,7 +669,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
   // ---------------- FileLister ----------------
 
   async listVideos(rootFid: string, onProgress: (p: ScanProgress) => void): Promise<LocalFile[]> {
-    const api = this.api;
+    const api = this.drive;
     await api.ensureFresh();
     const out: LocalFile[] = [];
     const queue: DirTask[] = [];

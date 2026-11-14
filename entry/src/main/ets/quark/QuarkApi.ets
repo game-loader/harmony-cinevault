@@ -2,7 +2,8 @@ import { request, buildQuery, HttpError, HttpResponse, HttpMethod } from '../com
 import { CookieUtil, htmlUnescape } from './CookieUtil';
 import {
   QuarkConst, QuarkEnvelope, QuarkSortResp, QuarkFileJson, QuarkFile, QuarkDownloadResp, QuarkDownloadBody,
-  QuarkPlayBody, QuarkPlayResp, QuarkVideoEntry, QuarkQuality, QuarkLink, QuarkError, QuarkAccountResp, resolutionLabel, resolutionRank
+  QuarkPlayBody, QuarkPlayResp, QuarkVideoEntry, QuarkQuality, QuarkLink, QuarkError, QuarkAccountResp, resolutionLabel, resolutionRank,
+  QuarkDrive
 } from './QuarkTypes';
 
 /** Cookies the server re-issues and that we merge back into the stored cookie. */
@@ -12,7 +13,7 @@ const ROLLING_COOKIES: string[] = ['__puus', '__pus'];
  * Quark cloud drive HTTP client. Keeps the cookie up to date from Set-Cookie and notifies the owner
  * through onCookieChanged so it can be persisted.
  */
-export class QuarkApi {
+export class QuarkApi implements QuarkDrive {
   cookie: string;
   apiBase: string;
   onCookieChanged: ((cookie: string) => void) | undefined = undefined;
@@ -269,6 +270,18 @@ export class QuarkApi {
       throw new QuarkError(401, 0, '未登录或 Cookie 已失效');
     }
     return nick;
+  }
+
+  authMode(): string {
+    return 'cookie';
+  }
+
+  streamHeaders(): Record<string, string> {
+    return QuarkApi.playHeaders(this.cookie);
+  }
+
+  accountName(): Promise<string> {
+    return this.accountInfo();
   }
 
   /** Touch /config to validate the cookie for the drive api. */

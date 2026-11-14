@@ -82,7 +82,7 @@ struct QuarkBrowserPage {
     }
     this.error = '';
     try {
-      const list = await prov.api.listAll(this.current().fid);
+      const list = await prov.drive.listAll(this.current().fid);
       if (seq !== this.loadSeq) {
         return;
       }

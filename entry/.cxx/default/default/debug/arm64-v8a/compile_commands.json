@@ -1,8 +1,0 @@
-[
-{
-  "directory": "/home/droid/harmony-cinevault/entry/.cxx/default/default/debug/arm64-v8a",
-  "command": "/home/droid/ohos-sdk-7/26.0.0/native/llvm/bin/clang++ --target=aarch64-linux-ohos --gcc-toolchain=/home/droid/ohos-sdk-7/26.0.0/native/llvm --sysroot=/home/droid/ohos-sdk-7/26.0.0/native/sysroot -Dcodecprobe_EXPORTS -fdata-sections -ffunction-sections -funwind-tables -fstack-protector-strong -no-canonical-prefixes -fno-addrsig -Wa,--noexecstack -Wformat -Werror=format-security   -D__MUSL__ -O0 -g -fno-limit-debug-info  -fPIC -o CMakeFiles/codecprobe.dir/codec_probe.cpp.o -c /home/droid/harmony-cinevault/entry/src/main/cpp/codec_probe.cpp",
-  "file": "/home/droid/harmony-cinevault/entry/src/main/cpp/codec_probe.cpp",
-  "output": "CMakeFiles/codecprobe.dir/codec_probe.cpp.o"
-}
-]

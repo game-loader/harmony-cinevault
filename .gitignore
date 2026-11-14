@@ -7,3 +7,4 @@ oh_modules/
 entry/oh_modules/
 *.hap
 .build.log
+entry/.cxx/

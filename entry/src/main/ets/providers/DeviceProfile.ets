@@ -1,4 +1,5 @@
-// Emby/Jellyfin DeviceProfile describing what HarmonyOS AVPlayer can play. Pure module (no imports).
+// Emby/Jellyfin DeviceProfile data classes. Pure module (no imports). The capability-driven profile is built by
+// media/ProfileBuilder.ets; buildDeviceProfile below is the legacy fixed profile (kept for reference/tests).
 // Codec list follows media.CodecMimeType in API 26 (avc, hevc, aac, mp3, flac, vorbis). Opus/AC3/EAC3/DTS,
 // VP9 and AV1 are deliberately left out so the server remuxes/transcodes audio to AAC instead of failing.
 
@@ -25,6 +26,8 @@ export class TranscodingProfile {
 export class SubtitleProfile {
   Format: string = '';
   Method: string = 'External';
+  /** Restrict to output containers (e.g. 'mkv' for Embed) */
+  Container?: string;
 }
 
 export class ProfileCondition {

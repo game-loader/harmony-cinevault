@@ -1,40 +1,72 @@
+import { deviceInfo } from '@kit.BasicServicesKit';
 import { nativeProbeJson } from './NativeProbe';
+import {
+  CodecEntry, DecoderInfo, parseProbeJson, findEntry, hasDecoder, hasHardware, maxHeightOf, pickDecoder, formatReport
+} from './ProfileBuilder';
 
-/** One decoder implementation reported by the system (see cpp/codec_probe.cpp). */
-export class DecoderInfo {
-  name: string = '';
-  hw: boolean = false;
-  instances: number = 0;
-  maxWidth: number = 0;     // video only
-  maxHeight: number = 0;    // video only
-  uhd60: boolean = false;
-  uhd30: boolean = false;
-  fhd60: boolean = false;
-  maxChannels: number = 0;  // audio only
-  profiles: number[] = [];
-}
-
-/** Probe result for one codec. codec uses Emby/ffmpeg names: h264 hevc vvc av1 vp9 vp8 mpeg2video mpeg4 h263 vc1 wmv3 rv40 mjpeg aac mp3 flac vorbis opus alac ape ac3 eac3 dts truehd wma pcm */
-export class CodecEntry {
-  codec: string = '';
-  video: boolean = false;
-  mime: string = '';
-  decoders: DecoderInfo[] = [];
-}
+// The data classes live in the pure ProfileBuilder module so they can be unit-tested; re-exported here (contract).
+export { CodecEntry, DecoderInfo };
 
 /**
- * OWNER: codec agent. Facade over the native probe. load() is synchronous and cached; call it once at startup
- * (EntryAbility) and whenever entries are needed. Signatures below are the contract other modules use.
+ * OWNER: codec agent. Facade over the native probe. load() runs the (read-only, fast) probe and caches the result;
+ * call it once at startup (EntryAbility) and again to re-detect. entries() and the queries use the cache and probe
+ * lazily the first time. Signatures below are the contract other modules use.
  */
 export class CodecCaps {
-  static load(): CodecEntry[] { return []; }
-  static entries(): CodecEntry[] { return []; }
-  static has(codec: string): boolean { return false; }
-  static isHardware(codec: string): boolean { return false; }
+  private static cache: CodecEntry[] = [];
+  private static loaded: boolean = false;
+
+  static load(): CodecEntry[] {
+    let json = '[]';
+    try {
+      json = nativeProbeJson();
+    } catch (e) {
+      console.error(`[CodecCaps] probe failed: ${(e as Error).message}`);
+    }
+    CodecCaps.cache = parseProbeJson(json);
+    CodecCaps.loaded = true;
+    return CodecCaps.cache;
+  }
+
+  static entries(): CodecEntry[] {
+    if (!CodecCaps.loaded) {
+      return CodecCaps.load();
+    }
+    return CodecCaps.cache;
+  }
+
+  static has(codec: string): boolean {
+    return hasDecoder(CodecCaps.entries(), codec);
+  }
+
+  static isHardware(codec: string): boolean {
+    return hasHardware(CodecCaps.entries(), codec);
+  }
+
   /** Largest height any decoder for this codec supports (0 = none) */
-  static maxHeight(codec: string): number { return 0; }
+  static maxHeight(codec: string): number {
+    return maxHeightOf(CodecCaps.entries(), codec);
+  }
+
   /** Decoder that would be used for this codec (hardware preferred), undefined if none */
-  static decoderFor(codec: string): DecoderInfo | undefined { return undefined; }
+  static decoderFor(codec: string): DecoderInfo | undefined {
+    return pickDecoder(CodecCaps.entries(), codec);
+  }
+
+  /** Probe entry for a codec (aliases like h265/dca accepted), undefined if the codec wasn't probed */
+  static entry(codec: string): CodecEntry | undefined {
+    return findEntry(CodecCaps.entries(), codec);
+  }
+
   /** Plain-text report for the "复制报告" button */
-  static report(): string { return ''; }
+  static report(): string {
+    const header: string[] = ['影库 解码能力报告'];
+    try {
+      header.push('设备: ' + deviceInfo.marketName + ' (' + deviceInfo.productModel + ')');
+      header.push('系统: ' + deviceInfo.osFullName + ' / API ' + deviceInfo.sdkApiVersion);
+    } catch (e) {
+      console.warn(`[CodecCaps] deviceInfo unavailable: ${(e as Error).message}`);
+    }
+    return formatReport(CodecCaps.entries(), header);
+  }
 }

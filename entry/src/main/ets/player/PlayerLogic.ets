@@ -219,3 +219,323 @@ export function nextCountdown(positionMs: number, durationMs: number, windowMs: 
   }
   return Math.max(1, Math.ceil(left / 1000));
 }
+
+// ---------- automatic fallback chain ----------
+
+/** Result of decideFallback. action: 'remux' | 'transcode' (re-request with forceMode) | 'quality' (switch to qualities[qualityIndex]) | 'none' */
+export class FallbackStep {
+  action: string = 'none';
+  qualityIndex: number = -1;
+  /** Attempt key to record in the tried list ('remux', 'transcode', 'q:<i>') */
+  key: string = '';
+  banner: string = '';
+}
+
+/** Maximum automatic switches per item; guards against loops even if keys repeat. */
+export const MAX_AUTO_FALLBACKS: number = 3;
+
+/**
+ * Next step after a playback failure. Server sources (no qualities): direct -> remux -> transcode.
+ * Quark-style sources (qualities non-empty, no server remux): original -> best untried transcoded quality.
+ * tried holds keys of attempts already made for this item (including the failed current one).
+ */
+export function decideFallback(deliveryMode: string, qualityLabels: string[], currentQuality: number,
+  tried: string[]): FallbackStep {
+  const step = new FallbackStep();
+  if (tried.length >= MAX_AUTO_FALLBACKS) {
+    return step;
+  }
+  if (qualityLabels.length > 0) {
+    const cur = currentQuality >= 0 && currentQuality < qualityLabels.length ? qualityLabels[currentQuality] : '';
+    if (cur !== '原画') {
+      // only the original link falls back; a failing transcode is not retried automatically
+      return step;
+    }
+    for (let i = 0; i < qualityLabels.length; i++) {
+      // qualities are ordered best first (QuarkProvider sorts by resolution rank)
+      if (qualityLabels[i] !== '原画' && tried.indexOf('q:' + i) < 0) {
+        step.action = 'quality';
+        step.qualityIndex = i;
+        step.key = 'q:' + i;
+        step.banner = '原画播放失败，已切换为' + qualityLabels[i];
+        return step;
+      }
+    }
+    return step;
+  }
+  if (deliveryMode === 'direct' && tried.indexOf('remux') < 0) {
+    step.action = 'remux';
+    step.key = 'remux';
+    step.banner = '直接播放失败，已切换为服务器转封装';
+    return step;
+  }
+  if ((deliveryMode === 'direct' || deliveryMode === 'remux') && tried.indexOf('transcode') < 0) {
+    step.action = 'transcode';
+    step.key = 'transcode';
+    step.banner = '已切换为服务器转码';
+    return step;
+  }
+  return step;
+}
+
+// ---------- super resolution ----------
+
+/** Super resolution only helps sources whose short side is below 1080 px. */
+export function wantSuperResolution(videoW: number, videoH: number): boolean {
+  if (videoW <= 0 || videoH <= 0) {
+    return false;
+  }
+  return Math.min(videoW, videoH) < 1080;
+}
+
+/** setVideoWindowSize accepts 320..1920 x 320..1080 px: scale the on-screen size into that box keeping its ratio. */
+export function srWindowSize(pxW: number, pxH: number): VideoBox {
+  const b = new VideoBox();
+  if (pxW <= 0 || pxH <= 0) {
+    return b;
+  }
+  const s = Math.min(1, 1920 / pxW, 1080 / pxH);
+  b.width = clamp(Math.round(pxW * s), 320, 1920);
+  b.height = clamp(Math.round(pxH * s), 320, 1080);
+  return b;
+}
+
+// ---------- codec names ----------
+
+/** Normalise server / ffmpeg codec names to the keys CodecCaps uses. */
+export function normCodec(name: string): string {
+  const v = name.trim().toLowerCase();
+  switch (v) {
+    case 'avc': case 'h.264': case 'avc1': case 'x264': return 'h264';
+    case 'h265': case 'h.265': case 'hev1': case 'hvc1': case 'x265': return 'hevc';
+    case 'h266': case 'h.266': return 'vvc';
+    case 'av01': return 'av1';
+    case 'mpeg2': return 'mpeg2video';
+    case 'dca': return 'dts';
+    case 'mlp': return 'truehd';
+    case 'wmav1': case 'wmav2': case 'wmapro': return 'wma';
+    case 'wvc1': return 'vc1';
+    case 'mp2': case 'mp3float': return 'mp3';
+    default:
+      return v.startsWith('pcm') ? 'pcm' : v;
+  }
+}
+
+/** Codec key + mime pair (from CodecCaps.entries()). */
+export class CodecMime {
+  codec: string = '';
+  mime: string = '';
+
+  constructor(codec: string, mime: string) {
+    this.codec = codec;
+    this.mime = mime;
+  }
+}
+
+// mime strings confirmed in the SDK CodecMimeType enum
+const SDK_MIMES: CodecMime[] = [
+  new CodecMime('h264', 'video/avc'), new CodecMime('hevc', 'video/hevc'), new CodecMime('mpeg2video', 'video/mpeg2'),
+  new CodecMime('mpeg4', 'video/mp4v-es'), new CodecMime('h263', 'video/h263'), new CodecMime('vp8', 'video/x-vnd.on2.vp8'),
+  new CodecMime('aac', 'audio/mp4a-latm'), new CodecMime('mp3', 'audio/mpeg'), new CodecMime('flac', 'audio/flac'),
+  new CodecMime('vorbis', 'audio/vorbis'), new CodecMime('pcm', 'audio/raw')
+];
+
+// substring fallbacks for mimes without an ArkTS constant (order matters: eac3 before ac3, vp9 before vp8)
+const MIME_HINTS: string[][] = [
+  ['av01', 'av1'], ['av1', 'av1'], ['vp9', 'vp9'], ['vp8', 'vp8'], ['vvc', 'vvc'], ['h266', 'vvc'], ['hevc', 'hevc'],
+  ['h265', 'hevc'], ['avc', 'h264'], ['h264', 'h264'], ['wmv3', 'wmv3'], ['wvc1', 'vc1'], ['vc1', 'vc1'], ['rv40', 'rv40'],
+  ['rv30', 'rv30'], ['mjpeg', 'mjpeg'], ['mpeg2', 'mpeg2video'], ['mp4v', 'mpeg4'], ['h263', 'h263'],
+  ['eac3', 'eac3'], ['e-ac-3', 'eac3'], ['ac3', 'ac3'], ['ac-3', 'ac3'], ['truehd', 'truehd'], ['dts', 'dts'],
+  ['opus', 'opus'], ['alac', 'alac'], ['ape', 'ape'], ['wma', 'wma'], ['flac', 'flac'], ['vorbis', 'vorbis'],
+  ['mp4a', 'aac'], ['aac', 'aac'], ['mpeg', 'mp3'], ['raw', 'pcm'], ['pcm', 'pcm']
+];
+
+/** Map an AVPlayer track mime (MD_KEY_CODEC_MIME) to a CodecCaps key; probe table first, '' when unknown. */
+export function mimeToCodec(mime: string, probe: CodecMime[]): string {
+  const m = mime.trim().toLowerCase();
+  if (m.length === 0) {
+    return '';
+  }
+  for (let i = 0; i < probe.length; i++) {
+    if (probe[i].mime.length > 0 && probe[i].mime.toLowerCase() === m) {
+      return probe[i].codec;
+    }
+  }
+  for (let i = 0; i < SDK_MIMES.length; i++) {
+    if (SDK_MIMES[i].mime === m) {
+      return SDK_MIMES[i].codec;
+    }
+  }
+  const slash = m.indexOf('/');
+  const tail = slash >= 0 ? m.substring(slash + 1) : m;
+  for (let i = 0; i < MIME_HINTS.length; i++) {
+    if (tail.indexOf(MIME_HINTS[i][0]) >= 0) {
+      return MIME_HINTS[i][1];
+    }
+  }
+  return '';
+}
+
+// ---------- "播放信息" panel ----------
+
+export class InfoRow {
+  label: string = '';
+  value: string = '';
+
+  constructor(label: string, value: string) {
+    this.label = label;
+    this.value = value;
+  }
+}
+
+/** One track from getTrackDescription, already decoded to plain values. */
+export class TrackStat {
+  type: number = -1;        // 0 audio, 1 video, 2 subtitle
+  mime: string = '';
+  width: number = 0;
+  height: number = 0;
+  frameRate: number = 0;    // fps (already divided by 100)
+  hdrType: string = '';     // raw MD_KEY_HDR_TYPE value
+  bitrate: number = 0;
+  channels: number = 0;
+  sampleRate: number = 0;
+  language: string = '';
+}
+
+/** Decoder chosen for a codec (from CodecCaps.decoderFor), known = a decoder was found. */
+export class DecoderStat {
+  codec: string = '';
+  known: boolean = false;
+  hw: boolean = false;
+  name: string = '';
+}
+
+export class StatsInput {
+  deliveryMode: string = 'direct';
+  transcodeReasons: string[] = [];
+  /** extra note after the mode, e.g. '夸克云端' */
+  modeNote: string = '';
+  container: string = '';
+  videoCodec: string = '';
+  audioCodec: string = '';
+  videoWidth: number = 0;
+  videoHeight: number = 0;
+  videoRange: string = '';
+  bitrate: number = 0;
+  videoDecoder: DecoderStat = new DecoderStat();
+  audioDecoder: DecoderStat = new DecoderStat();
+  tracks: TrackStat[] = [];
+  /** 'off' | 'on' | 'idle' (enabled, source is >= 1080p) | 'unavailable' */
+  superRes: string = 'off';
+  renderW: number = 0;
+  renderH: number = 0;
+  /** network: -1 = unknown */
+  downloadRate: number = -1;
+  avgDownloadRate: number = -1;
+  bufferSec: number = -1;
+  downloading: number = -1;
+  serverIp: string = '';
+}
+
+export function deliveryLabel(mode: string): string {
+  switch (mode) {
+    case 'remux': return '转封装';
+    case 'transcode': return '转码';
+    default: return '直接播放';
+  }
+}
+
+export function formatRate(bps: number): string {
+  if (bps < 0) {
+    return '—';
+  }
+  if (bps >= 1000000) {
+    return (bps / 1000000).toFixed(1) + ' Mbps';
+  }
+  return Math.round(bps / 1000) + ' Kbps';
+}
+
+/** MD_KEY_HDR_TYPE (media.HdrType: 0 none, 1 HDR Vivid); other non-empty values are shown raw. */
+export function hdrTypeLabel(raw: string): string {
+  const v = raw.trim();
+  if (v.length === 0 || v === '0' || v === '-1') {
+    return '';
+  }
+  if (v === '1') {
+    return 'HDR Vivid';
+  }
+  return v;
+}
+
+function decoderText(d: DecoderStat): string {
+  if (d.codec.length === 0) {
+    return '未知';
+  }
+  if (!d.known) {
+    return '未探测到解码器';
+  }
+  return d.hw ? `硬件解码 (${d.name})` : `软件解码${d.name.length > 0 ? ' (' + d.name + ')' : ''}`;
+}
+
+function superResText(s: string): string {
+  switch (s) {
+    case 'on': return '已开启';
+    case 'idle': return '已启用（片源 ≥1080P，未生效）';
+    case 'unavailable': return '超分不可用';
+    default: return '关闭';
+  }
+}
+
+function resText(w: number, h: number): string {
+  return w > 0 && h > 0 ? `${w}×${h}` : '';
+}
+
+function joinNonEmpty(parts: string[], sep: string): string {
+  return parts.filter((s: string) => s.length > 0).join(sep);
+}
+
+export function buildInfoRows(s: StatsInput): InfoRow[] {
+  const rows: InfoRow[] = [];
+  let mode = deliveryLabel(s.deliveryMode);
+  if (s.modeNote.length > 0) {
+    mode += '（' + s.modeNote + '）';
+  }
+  rows.push(new InfoRow('播放方式', mode));
+  if (s.deliveryMode !== 'direct' && s.transcodeReasons.length > 0) {
+    rows.push(new InfoRow('转码原因', s.transcodeReasons.join(', ')));
+  }
+  const src = joinNonEmpty([s.container.toUpperCase(), s.videoCodec.toUpperCase(), s.audioCodec.toUpperCase()], ' / ');
+  if (src.length > 0) {
+    rows.push(new InfoRow('片源编码', src));
+  }
+  const srcVideo = joinNonEmpty([resText(s.videoWidth, s.videoHeight), s.videoRange,
+    s.bitrate > 0 ? formatRate(s.bitrate) : ''], ' · ');
+  if (srcVideo.length > 0) {
+    rows.push(new InfoRow('片源画面', srcVideo));
+  }
+  rows.push(new InfoRow('视频解码', decoderText(s.videoDecoder)));
+  rows.push(new InfoRow('音频解码', decoderText(s.audioDecoder)));
+  for (let i = 0; i < s.tracks.length; i++) {
+    const t = s.tracks[i];
+    if (t.type === 1) {
+      rows.push(new InfoRow('视频轨', joinNonEmpty([t.mime, resText(t.width, t.height),
+        t.frameRate > 0 ? (Math.round(t.frameRate * 100) / 100) + ' fps' : '', hdrTypeLabel(t.hdrType),
+        t.bitrate > 0 ? formatRate(t.bitrate) : ''], ' · ')));
+    } else if (t.type === 0) {
+      rows.push(new InfoRow('音频轨', joinNonEmpty([t.mime, t.language, t.channels > 0 ? t.channels + ' 声道' : '',
+        t.sampleRate > 0 ? t.sampleRate + ' Hz' : ''], ' · ')));
+    }
+  }
+  if (s.renderW > 0 && s.renderH > 0) {
+    rows.push(new InfoRow('输出画面', resText(s.renderW, s.renderH)));
+  }
+  rows.push(new InfoRow('超分辨率', superResText(s.superRes)));
+  rows.push(new InfoRow('下载速度', formatRate(s.downloadRate) +
+    (s.avgDownloadRate >= 0 ? '（平均 ' + formatRate(s.avgDownloadRate) + '）' : '')));
+  rows.push(new InfoRow('缓冲时长', s.bufferSec >= 0 ? s.bufferSec.toFixed(1) + ' 秒' +
+    (s.downloading === 0 ? '（已下载完成）' : '') : '—'));
+  if (s.serverIp.length > 0) {
+    rows.push(new InfoRow('服务器', s.serverIp));
+  }
+  return rows;
+}

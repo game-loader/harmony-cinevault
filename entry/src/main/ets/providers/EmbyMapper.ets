@@ -6,6 +6,7 @@ import {
 import {
   EmbyItem, EmbyUserData, EmbyMediaSource, EmbyMediaStream, EmbyPlaybackInfoResult, EmbyPublicInfo
 } from './EmbyTypes';
+import { detectDelivery, transcodeReasons, urlBitrate, rangeLabel, normCodec } from '../media/ProfileBuilder';
 
 export const TICKS_PER_MS: number = 10000;
 
@@ -633,7 +634,36 @@ export function mapPlayback(ctx: EmbyContext, itemId: string, res: EmbyPlaybackI
   const streams = src.MediaStreams ?? [];
   info.audioTracks = mapAudioTracks(streams);
   info.subtitles = mapSubtitles(ctx, itemId, msid, streams);
+  applyStreamInfo(info, src, -1);
   return info;
+}
+
+/**
+ * Fill PlaybackInfo.deliveryMode / codec / size / range / bitrate / transcodeReasons from the media source.
+ * audioIndex: requested audio stream (-1 = server default).
+ */
+export function applyStreamInfo(info: PlaybackInfo, src: EmbyMediaSource, audioIndex: number): void {
+  const streams = src.MediaStreams ?? [];
+  const video = streams.find((s: EmbyMediaStream) => s.Type === 'Video');
+  const audios = streams.filter((s: EmbyMediaStream) => s.Type === 'Audio');
+  const wanted = audioIndex >= 0 ? audioIndex : (src.DefaultAudioStreamIndex ?? -1);
+  let audio = audios.find((s: EmbyMediaStream) => s.Index === wanted);
+  if (audio === undefined) {
+    audio = audios.find((s: EmbyMediaStream) => s.IsDefault === true);
+  }
+  if (audio === undefined && audios.length > 0) {
+    audio = audios[0];
+  }
+  info.videoCodec = video !== undefined ? normCodec(video.Codec ?? '') : '';
+  info.audioCodec = audio !== undefined ? normCodec(audio.Codec ?? '') : '';
+  info.videoWidth = video !== undefined ? (video.Width ?? 0) : 0;
+  info.videoHeight = video !== undefined ? (video.Height ?? 0) : 0;
+  info.videoRange = video !== undefined ? rangeLabel(video.VideoRangeType ?? '', video.VideoRange ?? '',
+    (video.ColorTransfer ?? '').toLowerCase(), video.ExtendedVideoType ?? '') : '';
+  info.transcodeReasons = info.isTranscode ? transcodeReasons(info.url, src.TranscodeReasons ?? []) : [];
+  info.deliveryMode = detectDelivery(info.url, info.isTranscode, info.videoCodec, info.transcodeReasons);
+  const outRate = info.deliveryMode === 'transcode' ? urlBitrate(info.url) : 0;
+  info.bitrate = outRate > 0 ? outRate : (src.Bitrate ?? 0);
 }
 
 /** Body for /Sessions/Playing, /Progress and /Stopped. */

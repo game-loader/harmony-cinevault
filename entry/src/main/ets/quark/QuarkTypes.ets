@@ -178,3 +178,131 @@ export function resolutionRank(r: string): number {
   const i = order.indexOf(r);
   return i < 0 ? order.length : i;
 }
+
+// ---------------- TV client (open-api-drive.quark.cn) ----------------
+
+/** Error / common envelope of the TV api: {status, errno, error_info, req_id}. */
+export interface QuarkTvEnvelope {
+  status?: number;
+  errno?: number;
+  error_info?: string;
+  req_id?: string;
+}
+
+export interface QuarkTvAuthResp extends QuarkTvEnvelope {
+  qr_data?: string;
+  query_token?: string;
+}
+
+export interface QuarkTvCodeResp extends QuarkTvEnvelope {
+  code?: string;
+}
+
+export interface QuarkTvTokenData {
+  status?: number;
+  errno?: number;
+  error_info?: string;
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+}
+
+export interface QuarkTvTokenResp {
+  code?: number;
+  message?: string;
+  data?: QuarkTvTokenData;
+}
+
+export interface QuarkTvFileJson {
+  fid?: string;
+  parent_fid?: string;
+  category?: number;
+  filename?: string;
+  size?: number;
+  file_type?: string | number;
+  isdir?: number;
+  duration?: number;
+  created_at?: number;
+  updated_at?: number;
+  thumbnail_url?: string;
+}
+
+export interface QuarkTvListData {
+  total_count?: number;
+  files?: QuarkTvFileJson[];
+}
+
+export interface QuarkTvListResp extends QuarkTvEnvelope {
+  data?: QuarkTvListData;
+}
+
+export interface QuarkTvDownloadData {
+  fid?: string;
+  file_name?: string;
+  size?: number;
+  download_url?: string;
+}
+
+export interface QuarkTvDownloadResp extends QuarkTvEnvelope {
+  data?: QuarkTvDownloadData;
+}
+
+export interface QuarkTvVideoInfo {
+  resolution?: string;
+  accessable?: number;
+  trans_status?: string;
+  duration?: number;
+  size?: number;
+  format?: string;
+  width?: number;
+  height?: number;
+  url?: string;
+  bitrate?: number;
+}
+
+export interface QuarkTvStreamData {
+  default_resolution?: string;
+  video_info?: QuarkTvVideoInfo[];
+}
+
+export interface QuarkTvStreamResp extends QuarkTvEnvelope {
+  data?: QuarkTvStreamData;
+}
+
+/** Shape of /user?method=user_info is undocumented: read the usual name fields defensively. */
+export interface QuarkTvUserData {
+  nickname?: string;
+  nick_name?: string;
+  user_name?: string;
+  name?: string;
+}
+
+export interface QuarkTvUserResp extends QuarkTvEnvelope {
+  data?: QuarkTvUserData;
+}
+
+/** QR login challenge: image as data URI plus the token to poll with. */
+export class QuarkTvQr {
+  image: string = '';
+  queryToken: string = '';
+}
+
+/**
+ * Drive backend used by QuarkProvider / QuarkBrowser. Implemented by QuarkApi (web cookie) and QuarkTvApi (TV client).
+ */
+export interface QuarkDrive {
+  /** 'cookie' | 'tv' */
+  authMode(): string;
+  /** All entries of a folder (follows paging). */
+  listAll(fid: string): Promise<QuarkFile[]>;
+  /** Original-quality link plus the headers the player must send. */
+  downloadLink(fid: string): Promise<QuarkLink>;
+  /** Server transcodes, best first; empty when none. */
+  playQualities(fid: string): Promise<QuarkQuality[]>;
+  /** Headers for transcode / subtitle urls. */
+  streamHeaders(): Record<string, string>;
+  /** Account display name; throws when not logged in. */
+  accountName(): Promise<string>;
+  /** Refresh credentials if due. Never throws. */
+  ensureFresh(): Promise<void>;
+}
