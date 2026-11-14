@@ -156,6 +156,8 @@ export class QualityOption {
 }
 
 export class PlaybackRequest {
+  /** '' = let the profile decide; 'remux' = no direct play, copy streams into HLS where possible; 'transcode' = full transcode */
+  forceMode: string = '';
   maxBitrate: number = 0;          // 0 = original / direct play
   audioIndex: number = -1;
   subtitleIndex: number = -1;

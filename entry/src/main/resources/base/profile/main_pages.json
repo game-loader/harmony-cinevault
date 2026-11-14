@@ -8,6 +8,7 @@
     "pages/Settings",
     "pages/ServerEdit",
     "pages/QuarkLogin",
-    "pages/QuarkBrowser"
+    "pages/QuarkBrowser",
+    "pages/CodecInfo"
   ]
 }

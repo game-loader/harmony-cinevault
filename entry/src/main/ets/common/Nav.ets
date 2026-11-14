@@ -86,6 +86,10 @@ export class Nav {
     router.pushUrl({ url: 'pages/QuarkBrowser', params: p });
   }
 
+  static codecInfo(): void {
+    router.pushUrl({ url: 'pages/CodecInfo' });
+  }
+
   static back(): void {
     router.back();
   }
