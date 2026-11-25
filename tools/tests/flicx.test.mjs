@@ -54,3 +54,11 @@ test('website handoff opens the requested film or episode on Flicx', () => {
   assert.equal(M.watchPage('flicx-tv-tt18347622-s2'), '');
   assert.equal(M.watchPage('https://unrelated.test'), '');
 });
+
+test('CDN-hosted lines sort before the same group\'s fli.cx-hosted master', () => {
+  const opts = M.sources({ sources: [
+    { kind: 'hls', has: true, group: 'dedicated', name: 'Flicx', quality: '4K', src: '/api/s/site.m3u8' },
+    { kind: 'hls', has: true, group: 'dedicated', name: 'Flicx', quality: '4K', src: 'https://s.fli.cx/s/cdn.m3u8' },
+    { kind: 'hls', has: true, name: 'Vega', src: 'https://s.fli.cx/s/vega.m3u8' }] }, root);
+  assert.deepEqual(opts.map(o => o.url), ['https://s.fli.cx/s/cdn.m3u8', root + '/api/s/site.m3u8', 'https://s.fli.cx/s/vega.m3u8']);
+});

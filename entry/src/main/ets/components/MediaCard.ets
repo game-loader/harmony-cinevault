@@ -111,13 +111,15 @@ export struct MediaCard {
   @Builder
   contextMenu() {
     Column() {
-      this.menuItemBuilder(this.cur.state.played ? '标记为未看' : '标记为已看',
-        $r('sys.symbol.checkmark'), () => { this.togglePlayed(); })
-      Divider().color(Theme.surface2)
-      this.menuItemBuilder(this.cur.state.favorite ? '取消收藏' : '收藏',
-        this.cur.state.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
-        () => { this.toggleFavorite(); })
-      Divider().color(Theme.surface2)
+      if (this.cur.type !== 'folder') {
+        this.menuItemBuilder(this.cur.state.played ? '标记为未看' : '标记为已看',
+          $r('sys.symbol.checkmark'), () => { this.togglePlayed(); })
+        Divider().color(Theme.surface2)
+        this.menuItemBuilder(this.cur.state.favorite ? '取消收藏' : '收藏',
+          this.cur.state.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
+          () => { this.toggleFavorite(); })
+        Divider().color(Theme.surface2)
+      }
       this.menuItemBuilder('查看详情', $r('sys.symbol.info_circle'), () => {
         Nav.detail(this.cur.sourceId, this.cur.id);
       })

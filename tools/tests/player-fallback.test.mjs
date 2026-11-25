@@ -103,3 +103,34 @@ test('info rows', () => {
   assert.equal(L.hdrTypeLabel('0'), '');
   assert.equal(L.formatRate(-1), '—');
 });
+
+test('Flicx line fallback walks the next untried lines, wraps around, and stops after the limit', () => {
+  const lines = ['Flicx · 4K', 'Vega · 4K', 'Sirius · 4K', 'Polaris · 720p', 'Spica · 1080p', 'Rigel'];
+  let s = L.decideLineFallback(lines, 0, ['q:0']);
+  assert.deepEqual([s.action, s.qualityIndex, s.key], ['quality', 1, 'q:1']);
+  assert.equal(s.banner, 'Flicx · 4K 无法播放，已切换到 Vega · 4K');
+  assert.equal(L.decideLineFallback(lines, 5, ['q:4', 'q:5']).qualityIndex, 0);
+  assert.equal(L.decideLineFallback(lines, 3, ['q:0', 'q:1', 'q:2', 'q:3']).action, 'none');
+  assert.equal(L.decideLineFallback(['only'], 0, ['q:0']).action, 'none');
+  assert.equal(L.decideLineFallback(['a', 'b'], 1, ['q:0', 'q:1']).action, 'none');
+  assert.equal(L.decideLineFallback(lines, -1, []).qualityIndex, 0);
+});
+
+test('HLS master variants become resolution choices, and a saved choice maps onto another line', () => {
+  const master = '#EXTM3U\n' +
+    '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=6136589,RESOLUTION=1920x1080,CODECS="avc1.640028,mp4a.40.2"\nhttps://a/1080.m3u8\n' +
+    '#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=16155921,RESOLUTION=3840x2160,FRAME-RATE=24.000\n/s/4k.m3u8\r\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=1316452,RESOLUTION=852x480\nlow.m3u8\n' +
+    '#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=1,BANDWIDTH=1316452,RESOLUTION=852x480\ndup.m3u8\n' +
+    '#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=900000\nnobw.m3u8\n' +
+    '#EXT-X-STREAM-INF:BANDWIDTH=3106008,RESOLUTION=1280x536\nwide.m3u8\n';
+  const v = L.parseHlsVariants(master);
+  assert.deepEqual(v.map(x => [x.bandwidth, x.height]), [[16155921, 2160], [6136589, 1080], [3106008, 536], [1316452, 480]]);
+  assert.deepEqual(v.map(L.variantLabel), ['4K', '1080p', '540p', '480p']);
+  assert.equal(L.variantLabel({ bandwidth: 2500000, width: 0, height: 0 }), '2.5 Mbps');
+  assert.equal(L.pickVariant(v, 1080).bandwidth, 6136589);
+  assert.equal(L.pickVariant(v, 720).bandwidth, 3106008);
+  assert.equal(L.pickVariant(v, 100).bandwidth, 1316452);
+  assert.equal(L.pickVariant([], 720), undefined);
+  assert.deepEqual(L.parseHlsVariants('#EXTM3U\n#EXTINF:6,\nseg.ts'), []);
+});

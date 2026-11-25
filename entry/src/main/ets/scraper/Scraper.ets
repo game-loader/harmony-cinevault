@@ -4,6 +4,7 @@ import { LibraryDb, LocalFile } from '../library/LibraryDb';
 import { ParsedName, parseName, isSubtitleFile, isVideoFile, stripExt, normKey, displayName, fileExt } from './NameParser';
 import { TmdbClient, TmdbCandidate } from './TmdbClient';
 import { TmdbDetail, TmdbSeason, TmdbEpisode, TmdbSeasonSummary } from './TmdbTypes';
+import { AppLog } from '../common/AppLog';
 
 export class ScanProgress {
   done: number = 0;
@@ -233,7 +234,7 @@ export class Scraper {
       if (isAuthError(msg)) {
         throw e as Error;
       }
-      console.warn('[scraper] movie search failed: ' + g.parsed.title + ': ' + msg);
+      AppLog.warn('[scraper] movie search failed: ' + g.parsed.title + ': ' + msg);
       await Scraper.keepOrUnmatch(g.jobs);
       return false;
     }
@@ -262,7 +263,7 @@ export class Scraper {
       if (isAuthError(msg)) {
         throw e as Error;
       }
-      console.warn('[scraper] tv search failed: ' + g.parsed.title + ': ' + msg);
+      AppLog.warn('[scraper] tv search failed: ' + g.parsed.title + ': ' + msg);
       await Scraper.keepOrUnmatch(g.jobs);
       g.jobs.forEach((j: Job) => onFile(j, j.file.itemId.length > 0 && !j.file.itemId.startsWith('file-')));
       return;
@@ -294,7 +295,7 @@ export class Scraper {
         if (isAuthError(msg)) {
           throw e as Error;
         }
-        console.warn('[scraper] episode failed: ' + j.file.path + ': ' + msg);
+        AppLog.warn('[scraper] episode failed: ' + j.file.path + ': ' + msg);
         await Scraper.keepOrUnmatch([j]);
       }
       onFile(j, ok);

@@ -17,6 +17,7 @@ import {
 } from '../components/settings/SettingsLogic';
 import { CODEC_MODE_OPTIONS, codecModeIndex } from '../components/settings/CodecInfoLogic';
 import { ScanProgressDialog } from '../components/settings/ScanProgressDialog';
+import { AppLog } from '../common/AppLog';
 
 const APP_VERSION: string = '1.1.0';
 
@@ -106,7 +107,7 @@ struct SettingsPage {
     try {
       promptAction.showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.error(`[Settings] toast: ${(e as Error).message}`);
+      AppLog.error(`[Settings] toast: ${(e as Error).message}`);
     }
   }
 
@@ -257,7 +258,7 @@ struct SettingsPage {
     try {
       AppContext.get().openLink(url, { appLinkingOnly: false }).catch((e: BusinessError) => {
         this.toast(`无法打开链接：${url}`);
-        console.error(`[Settings] openLink: ${e.code} ${e.message}`);
+        AppLog.error(`[Settings] openLink: ${e.code} ${e.message}`);
       });
     } catch (e) {
       this.toast(`无法打开链接：${url}`);
@@ -554,6 +555,7 @@ struct SettingsPage {
             (v: number) => { this.update((s: AppSettings) => { s.skipIntroMs = v * 1000; }); })
         }
         ListItem() { this.NavRow('解码能力', '查看本机硬件/软件解码器', () => Nav.codecInfo()) }
+        ListItem() { this.NavRow('运行日志', '播放出错时可在这里复制日志发给开发者', () => Nav.logs()) }
         ListItem() {
           this.SelectRow('编码兼容模式', strOpts(CODEC_MODE_OPTIONS), codecModeIndex(this.s.codecMode),
             (i: number) => { this.update((s: AppSettings) => { s.codecMode = CODEC_MODE_OPTIONS[i].value; }); })

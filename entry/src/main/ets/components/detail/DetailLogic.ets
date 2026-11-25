@@ -254,3 +254,19 @@ export function withPlayed(src: MediaItem, played: boolean): MediaItem {
   n.state.lastPlayed = src.state.lastPlayed;
   return n;
 }
+
+const GENRE_ZH: Record<string, string> = {
+  'action': '动作', 'adventure': '冒险', 'animation': '动画', 'comedy': '喜剧', 'crime': '犯罪',
+  'documentary': '纪录', 'drama': '剧情', 'family': '家庭', 'fantasy': '奇幻', 'history': '历史',
+  'horror': '恐怖', 'music': '音乐', 'mystery': '悬疑', 'romance': '爱情', 'science fiction': '科幻',
+  'sci-fi': '科幻', 'thriller': '惊悚', 'war': '战争', 'western': '西部', 'tv movie': '电视电影',
+  'action & adventure': '动作冒险', 'sci-fi & fantasy': '科幻奇幻', 'war & politics': '战争政治',
+  'kids': '儿童', 'news': '新闻', 'reality': '真人秀', 'soap': '肥皂剧', 'talk': '脱口秀', 'biography': '传记',
+  'sport': '运动', 'musical': '歌舞', 'anime': '动漫'
+};
+
+/** Chinese label for an English genre name (TMDB/Flicx); other text is returned unchanged. */
+export function genreLabel(g: string): string {
+  const zh = GENRE_ZH[g.trim().toLowerCase()];
+  return zh !== undefined ? zh : g;
+}

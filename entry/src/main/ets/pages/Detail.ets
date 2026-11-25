@@ -9,8 +9,8 @@ import { DetailPosterCard, PersonAvatar, EpisodeRow } from '../components/detail
 import { RematchDialog, RematchSeed } from '../components/detail/RematchDialog';
 import {
   formatClock, formatRating, formatSize, mediaBadges, metaParts, progressFraction, hasResume, pickNextEpisode,
-  pickSeasonIndex, seasonLabel, episodeCode, tmdbTypeFor, guessQuery, withPlayed
-} from '../components/detail/DetailLogic';
+  pickSeasonIndex, seasonLabel, episodeCode, tmdbTypeFor, guessQuery, withPlayed, genreLabel } from '../components/detail/DetailLogic';
+import { AppLog } from '../common/AppLog';
 
 function errMsg(e: Object): string {
   const be = e as BusinessError;
@@ -75,27 +75,32 @@ struct DetailPage {
     this.load(this.loadedOnce);
   }
 
-  get wide(): boolean {
+  wide(): boolean {
     return this.winWidth >= Theme.bpMd;
   }
 
-  get large(): boolean {
+  large(): boolean {
     return this.winWidth >= Theme.bpLg;
   }
 
-  get isQuark(): boolean {
+  isFlicx(): boolean {
+    return this.provider !== undefined && this.provider.config.kind === 'flicx';
+  }
+
+  isQuark(): boolean {
     return this.provider !== undefined && this.provider.config.kind === 'quark';
   }
 
-  get hasSeasons(): boolean {
+  hasSeasons(): boolean {
     return this.seriesId.length > 0;
   }
 
   toast(msg: string): void {
+    AppLog.info(`[Detail] toast: ${msg}`);
     try {
       this.getUIContext().getPromptAction().showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.error('toast failed ' + errMsg(e as Object));
+      AppLog.error('toast failed ' + errMsg(e as Object));
     }
   }
 
@@ -130,6 +135,7 @@ struct DetailPage {
         return;
       }
       this.item = it;
+      AppLog.info(`[Detail] loaded ${this.sourceId} ${it.id} type=${it.type} "${it.title}"`);
       this.played = it.state.played;
       this.favorite = it.state.favorite;
       this.loading = false;
@@ -151,11 +157,12 @@ struct DetailPage {
         return;
       }
       if (silent && this.loadedOnce) {
-        console.warn('detail refresh failed ' + errMsg(e as Object));
+        AppLog.warn('detail refresh failed ' + errMsg(e as Object));
         return;
       }
       this.loading = false;
       this.error = errMsg(e as Object);
+      AppLog.error(`[Detail] load ${this.sourceId} ${this.itemId} failed: ${this.error}`);
     }
   }
 
@@ -166,7 +173,7 @@ struct DetailPage {
         this.similar = list.filter((m: MediaItem) => m.id !== simId);
       }
     }).catch((e: Object) => {
-      console.warn('similar failed ' + errMsg(e));
+      AppLog.warn('similar failed ' + errMsg(e));
     });
     if (prov.config.kind === 'quark' && it.type !== 'series' && it.type !== 'season') {
       try {
@@ -175,7 +182,7 @@ struct DetailPage {
           this.files = fs;
         }
       } catch (e) {
-        console.warn('files failed ' + errMsg(e as Object));
+        AppLog.warn('files failed ' + errMsg(e as Object));
       }
     } else {
       this.files = [];
@@ -215,7 +222,7 @@ struct DetailPage {
           wantNum = hit.seasonNumber;
         }
       } catch (e) {
-        console.warn('nextUp failed ' + errMsg(e as Object));
+        AppLog.warn('nextUp failed ' + errMsg(e as Object));
       }
       if (token !== this.loadToken) {
         return;
@@ -275,36 +282,46 @@ struct DetailPage {
   }
 
   /** Container-like items play an episode; movies/episodes play themselves. */
-  get isContainer(): boolean {
+  isContainer(): boolean {
     return this.item.type === 'series' || this.item.type === 'season';
   }
 
-  get playable(): boolean {
-    if (this.isContainer) {
+  playable(): boolean {
+    if (this.isContainer()) {
       return this.episodes.length > 0;
     }
     return this.item.type !== 'folder' && this.item.type !== 'collection';
   }
 
   /** Episode index the main button targets (-1 when not a container). */
-  get targetEpIdx(): number {
-    return this.isContainer ? pickNextEpisode(this.episodes) : -1;
+  targetEpIdx(): number {
+    return this.isContainer() ? pickNextEpisode(this.episodes) : -1;
   }
 
-  get target(): MediaItem | undefined {
-    if (!this.isContainer) {
+  target(): MediaItem | undefined {
+    if (!this.isContainer()) {
       return this.item;
     }
-    const i = this.targetEpIdx;
+    const i = this.targetEpIdx();
     return i >= 0 ? this.episodes[i] : undefined;
   }
 
-  get playLabel(): string {
-    const t = this.target;
+  canResume(): boolean {
+    const t = this.target();
+    return t !== undefined && hasResume(t);
+  }
+
+  resumeFraction(): number {
+    const t = this.target();
+    return t !== undefined && hasResume(t) ? progressFraction(t) : 0;
+  }
+
+  playLabel(): string {
+    const t = this.target();
     if (!t) {
       return '播放';
     }
-    const prefix = this.isContainer ? episodeCode(t.seasonNumber, t.episodeNumber) + ' ' : '';
+    const prefix = this.isContainer() ? episodeCode(t.seasonNumber, t.episodeNumber) + ' ' : '';
     if (hasResume(t)) {
       return '继续播放 ' + prefix + formatClock(t.state.positionMs);
     }
@@ -319,13 +336,24 @@ struct DetailPage {
   }
 
   play(fromStart: boolean): void {
-    const t = this.target;
+    let t: MediaItem | undefined = undefined;
+    try {
+      t = this.target();
+    } catch (e) {
+      AppLog.error(`[Detail] play target failed: ${errMsg(e as Object)}`);
+    }
+    AppLog.info(`[Detail] play ${this.sourceId} item=${this.item.id || this.itemId} type=${this.item.type} ` +
+      `target=${t ? t.id : '-'} episodes=${this.episodes.length}`);
     if (!t) {
-      this.toast(this.isContainer ? '没有可播放的剧集' : '无法播放');
+      if (!this.isContainer() && this.itemId.length > 0) {
+        Nav.play(this.sourceId, this.itemId, fromStart ? 0 : -1, []);
+        return;
+      }
+      this.toast(this.isContainer() ? '没有可播放的剧集' : '无法播放');
       return;
     }
     const queue = t.type === 'episode' ? this.queueFor(t.id) : [];
-    Nav.play(this.sourceId, t.id, fromStart ? 0 : -1, queue);
+    Nav.play(this.sourceId, t.id || this.itemId, fromStart ? 0 : -1, queue);
   }
 
   playEpisode(idx: number): void {
@@ -342,7 +370,7 @@ struct DetailPage {
     const prevEps = this.episodes;
     this.played = v;
     this.busyPlayed = true;
-    if (this.isContainer) {
+    if (this.isContainer()) {
       this.episodes = prevEps.map((m: MediaItem) => withPlayed(m, v));
     }
     try {
@@ -434,12 +462,13 @@ struct DetailPage {
   @Builder
   backButton() {
     Row() {
-      Text('‹').fontSize(28).fontColor(Color.White).margin({ top: -4 })
+      SymbolGlyph($r('sys.symbol.chevron_left')).fontSize(22).fontColor([Color.White])
     }
-    .width(40).height(40).borderRadius(20)
+    .width(44).height(44).borderRadius(22)
     .justifyContent(FlexAlign.Center)
-    .backgroundColor('#66000000')
-    .margin({ left: 12, top: 12 })
+    .backgroundColor('#4D000000')
+    .backdropBlur(20)
+    .margin({ left: 16, top: 16 })
     .onClick(() => Nav.back())
   }
 
@@ -467,24 +496,27 @@ struct DetailPage {
   @Builder
   chip(label: string, filled: boolean) {
     Text(label)
-      .fontSize(12)
-      .fontColor(filled ? Color.White : Theme.text2)
-      .padding({ left: 10, right: 10, top: 4, bottom: 4 })
-      .borderRadius(12)
-      .backgroundColor(filled ? Theme.surface2 : Color.Transparent)
-      .border({ width: filled ? 0 : 1, color: Theme.text3, radius: 12 })
+      .fontSize(13)
+      .fontColor(filled ? '#E6FFFFFF' : Theme.text2)
+      .padding({ left: 12, right: 12, top: 5, bottom: 5 })
+      .borderRadius(14)
+      .backgroundColor(filled ? '#26FFFFFF' : Color.Transparent)
+      .border({ width: filled ? 0 : 1, color: '#40FFFFFF', radius: 14 })
   }
 
   @Builder
-  actionButton(icon: string, label: string, active: boolean, onTap: () => void) {
-    Column({ space: 4 }) {
-      Text(icon).fontSize(20).fontColor(active ? Theme.accent : Theme.text)
+  actionButton(icon: Resource, label: string, active: boolean, onTap: () => void) {
+    Column({ space: 6 }) {
+      Row() {
+        SymbolGlyph(icon).fontSize(22).fontColor([active ? Theme.accent : Color.White])
+      }
+      .width(48).height(48).borderRadius(24)
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(active ? '#33E53935' : '#26FFFFFF')
+      .border({ width: 1, color: active ? '#66E53935' : '#33FFFFFF', radius: 24 })
       Text(label).fontSize(11).fontColor(active ? Theme.accent : Theme.text2)
     }
-    .width(64).height(52)
-    .justifyContent(FlexAlign.Center)
-    .borderRadius(Theme.radius)
-    .backgroundColor('#33FFFFFF')
+    .width(64)
     .onClick(onTap)
   }
 
@@ -503,14 +535,14 @@ struct DetailPage {
       }
       if (this.img(this.item, 'logo', 600).length > 0 && this.item.type !== 'episode') {
         Image(this.img(this.item, 'logo', 600))
-          .height(this.large ? 110 : 72)
-          .width(this.large ? 360 : '70%')
+          .height(this.large() ? 110 : 72)
+          .width(this.large() ? 360 : '70%')
           .objectFit(ImageFit.Contain)
           .objectRepeat(ImageRepeat.NoRepeat)
       } else {
         Text(this.item.type === 'episode'
           ? episodeCode(this.item.seasonNumber, this.item.episodeNumber) + '  ' + this.item.title : this.item.title)
-          .fontSize(this.large ? 34 : 26).fontColor(Theme.text).fontWeight(FontWeight.Bold)
+          .fontSize(this.large() ? 34 : 26).fontColor(Theme.text).fontWeight(FontWeight.Bold)
           .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
       }
       if (this.item.originalTitle.length > 0 && this.item.originalTitle !== this.item.title) {
@@ -519,7 +551,10 @@ struct DetailPage {
       }
       Row({ space: 8 }) {
         if (this.item.rating > 0) {
-          Text('★ ' + formatRating(this.item.rating)).fontSize(14).fontColor('#FFC107').fontWeight(FontWeight.Medium)
+          Row({ space: 4 }) {
+            SymbolGlyph($r('sys.symbol.star_fill')).fontSize(14).fontColor(['#FFC107'])
+            Text(formatRating(this.item.rating)).fontSize(15).fontColor('#FFC107').fontWeight(FontWeight.Bold)
+          }
         }
         Text(metaParts(this.item).join(' · ')).fontSize(14).fontColor(Theme.text2)
       }
@@ -537,7 +572,7 @@ struct DetailPage {
         Flex({ wrap: FlexWrap.Wrap }) {
           ForEach(this.item.genres, (g: string) => {
             Column() {
-              this.chip(g, true)
+              this.chip(genreLabel(g), true)
             }.margin({ right: 8, bottom: 8 })
           }, (g: string) => g)
         }
@@ -550,48 +585,65 @@ struct DetailPage {
   @Builder
   buttons() {
     Column({ space: 10 }) {
-      if (this.target !== undefined && hasResume(this.target) && progressFraction(this.target) > 0) {
-        Progress({ value: progressFraction(this.target) * 100, total: 100, type: ProgressType.Linear })
+      if (this.resumeFraction() > 0) {
+        Progress({ value: this.resumeFraction() * 100, total: 100, type: ProgressType.Linear })
           .color(Theme.accent).backgroundColor('#33FFFFFF')
-          .width(this.wide ? 320 : '100%').height(4)
+          .width(this.wide() ? 320 : '100%').height(4)
       }
       Flex({ wrap: FlexWrap.Wrap, alignItems: ItemAlign.Center }) {
         Button() {
-          Row({ space: 6 }) {
-            Text('▶').fontSize(15).fontColor(Color.White)
-            Text(this.playLabel).fontSize(15).fontColor(Color.White).fontWeight(FontWeight.Medium)
+          Row({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.play_fill')).fontSize(20).fontColor([Color.Black])
+            Text(this.playLabel()).fontSize(16).fontColor(Color.Black).fontWeight(FontWeight.Bold)
           }
+          .justifyContent(FlexAlign.Center)
         }
-        .height(52).padding({ left: 24, right: 24 })
-        .backgroundColor(Theme.accent)
-        .enabled(this.playable)
-        .opacity(this.playable ? 1 : 0.5)
-        .margin({ right: 10, bottom: 10 })
+        .type(ButtonType.Capsule)
+        .height(50)
+        .constraintSize({ minWidth: this.wide() ? 168 : 140 })
+        .padding({ left: 28, right: 32 })
+        .backgroundColor(Color.White)
+        .shadow({ radius: 16, color: '#40000000', offsetY: 4 })
+        .enabled(this.playable())
+        .opacity(this.playable() ? 1 : 0.5)
+        .margin({ right: 12, bottom: 12 })
         .onClick(() => this.play(false))
 
-        if (this.target !== undefined && hasResume(this.target)) {
-          Button('从头播放')
-            .height(52).padding({ left: 18, right: 18 })
-            .fontColor(Theme.text).backgroundColor('#33FFFFFF')
-            .margin({ right: 10, bottom: 10 })
-            .onClick(() => this.play(true))
+        if (this.canResume()) {
+          Button() {
+            Row({ space: 6 }) {
+              SymbolGlyph($r('sys.symbol.arrow_clockwise')).fontSize(18).fontColor([Color.White])
+              Text('从头播放').fontSize(15).fontColor(Color.White).fontWeight(FontWeight.Medium)
+            }
+          }
+          .type(ButtonType.Capsule)
+          .height(50).padding({ left: 20, right: 22 })
+          .backgroundColor('#33FFFFFF')
+          .border({ width: 1, color: '#33FFFFFF', radius: 25 })
+          .margin({ right: 16, bottom: 12 })
+          .onClick(() => this.play(true))
         }
-        Column() {
-          this.actionButton(this.played ? '✓' : '○', this.played ? '已看' : '标记已看', this.played, () => {
-            this.togglePlayed();
-          })
-        }.margin({ right: 10, bottom: 10 })
-        Column() {
-          this.actionButton(this.favorite ? '♥' : '♡', this.favorite ? '已收藏' : '收藏', this.favorite, () => {
-            this.toggleFavorite();
-          })
-        }.margin({ right: 10, bottom: 10 })
-        if (this.isQuark) {
+        if (true) {
+          // Flicx keeps these on this device (FlicxLibrary); servers store them in the user's account
           Column() {
-            this.actionButton('⟳', '重新匹配', false, () => {
+            this.actionButton(this.played ? $r('sys.symbol.checkmark_circle_fill') : $r('sys.symbol.checkmark'),
+              this.played ? '已看' : '标记已看', this.played, () => {
+                this.togglePlayed();
+              })
+          }.margin({ right: 8, bottom: 12 })
+          Column() {
+            this.actionButton(this.favorite ? $r('sys.symbol.heart_fill') : $r('sys.symbol.heart'),
+              this.favorite ? '已收藏' : '收藏', this.favorite, () => {
+                this.toggleFavorite();
+              })
+          }.margin({ right: 8, bottom: 12 })
+        }
+        if (this.isQuark()) {
+          Column() {
+            this.actionButton($r('sys.symbol.arrow_clockwise'), '重新匹配', false, () => {
               this.rematchCtl.open();
             })
-          }.margin({ right: 10, bottom: 10 })
+          }.margin({ right: 8, bottom: 12 })
         }
       }
     }
@@ -610,7 +662,7 @@ struct DetailPage {
           .onClick(() => {
             this.expanded = !this.expanded;
           })
-        if (this.item.overview.length > (this.wide ? 160 : 70)) {
+        if (this.item.overview.length > (this.wide() ? 160 : 70)) {
           Text(this.expanded ? '收起' : '更多')
             .fontSize(13).fontColor(Theme.accent)
             .onClick(() => {
@@ -691,8 +743,8 @@ struct DetailPage {
             EpisodeRow({
               ep: ep,
               thumbUrl: this.img(ep, 'thumb', 400),
-              wide: this.wide,
-              current: i === this.targetEpIdx || ep.id === this.itemId,
+              wide: this.wide(),
+              current: i === this.targetEpIdx() || ep.id === this.itemId,
               onTap: () => this.playEpisode(i),
               onLong: () => {
                 this.toggleEpisodePlayed(i);
@@ -701,7 +753,7 @@ struct DetailPage {
           }, (ep: MediaItem) => ep.id + (ep.state.played ? '1' : '0') + ep.state.positionMs.toString())
         }
         .width('100%')
-        if (this.wide) {
+        if (this.wide()) {
           Text('长按剧集可切换已看状态').fontSize(11).fontColor(Theme.text3).margin({ top: 6 })
         }
       }
@@ -717,14 +769,14 @@ struct DetailPage {
       List({ space: 14 }) {
         ForEach(this.item.people, (p: Person) => {
           ListItem() {
-            PersonAvatar({ person: p, avatarSize: this.wide ? 84 : 68 })
+            PersonAvatar({ person: p, avatarSize: this.wide() ? 84 : 68 })
           }
         }, (p: Person, i: number) => i.toString() + p.name)
       }
       .listDirection(Axis.Horizontal)
       .scrollBar(BarState.Off)
       .width('100%')
-      .height(this.wide ? 140 : 122)
+      .height(this.wide() ? 140 : 122)
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')
@@ -740,7 +792,7 @@ struct DetailPage {
             DetailPosterCard({
               item: m,
               imageUrl: this.img(m, 'poster', 300),
-              cardWidth: this.large ? 150 : (this.wide ? 130 : 110),
+              cardWidth: this.large() ? 150 : (this.wide() ? 130 : 110),
               onTap: () => Nav.detail(m.sourceId.length > 0 ? m.sourceId : this.sourceId, m.id)
             })
           }
@@ -749,7 +801,7 @@ struct DetailPage {
       .listDirection(Axis.Horizontal)
       .scrollBar(BarState.Off)
       .width('100%')
-      .height((this.large ? 150 : (this.wide ? 130 : 110)) * 1.5 + 48)
+      .height((this.large() ? 150 : (this.wide() ? 130 : 110)) * 1.5 + 48)
     }
     .alignItems(HorizontalAlign.Start)
     .width('100%')
@@ -793,9 +845,9 @@ struct DetailPage {
 
   @Builder
   header() {
-    if (this.wide) {
-      Row({ space: this.large ? 36 : 24 }) {
-        this.posterImage(this.large ? 260 : 190)
+    if (this.wide()) {
+      Row({ space: this.large() ? 36 : 24 }) {
+        this.posterImage(this.large() ? 260 : 190)
         Column({ space: 16 }) {
           this.titleBlock()
           this.buttons()
@@ -806,7 +858,7 @@ struct DetailPage {
       }
       .width('100%')
       .alignItems(VerticalAlign.Bottom)
-      .padding({ top: this.large ? 160 : 120 })
+      .padding({ top: this.large() ? 160 : 120 })
     } else {
       Column({ space: 14 }) {
         this.titleBlock()
@@ -838,12 +890,12 @@ struct DetailPage {
             })
         }
         .width('100%')
-        .height(this.wide ? '75%' : this.winWidth * 9 / 16 + 40)
+        .height(this.wide() ? '75%' : this.winWidth * 9 / 16 + 40)
 
         Scroll() {
           Column({ space: 24 }) {
             this.header()
-            if (this.hasSeasons) {
+            if (this.hasSeasons()) {
               this.seasonsBlock()
             }
             if (this.item.people.length > 0) {
@@ -859,8 +911,8 @@ struct DetailPage {
           .width('100%')
           .alignItems(HorizontalAlign.Start)
           .padding({
-            left: this.large ? 48 : Theme.pagePad,
-            right: this.large ? 48 : Theme.pagePad,
+            left: this.large() ? 48 : Theme.pagePad,
+            right: this.large() ? 48 : Theme.pagePad,
             bottom: 48
           })
         }

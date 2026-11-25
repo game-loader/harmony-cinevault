@@ -119,7 +119,11 @@ export class FlicxMapper {
       return out;
     }
     const rows = response.sources.filter((s: FlicxSource) => !!s && s.kind === 'hls' && s.has === true);
-    rows.sort((a: FlicxSource, b: FlicxSource) => Number(b.group === 'dedicated') - Number(a.group === 'dedicated'));
+    // Dedicated first; within a group, CDN-hosted masters (s.fli.cx) before site-relative /api/s/ ones:
+    // on HarmonyOS 7 AVPlayer the fli.cx-hosted master of the same stream failed with 5400106 after ~20 s.
+    const rank = (x: FlicxSource): number => (x.group === 'dedicated' ? 0 : 2) +
+      (FlicxMapper.absoluteUrl(x.src, baseUrl).startsWith(baseUrl.replace(/\/$/, '') + '/') ? 1 : 0);
+    rows.sort((a: FlicxSource, b: FlicxSource) => rank(a) - rank(b));
     const seen = new Set<string>();
     for (const s of rows) {
       const url = FlicxMapper.absoluteUrl(s.src, baseUrl);

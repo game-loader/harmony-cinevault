@@ -278,6 +278,30 @@ export function decideFallback(deliveryMode: string, qualityLabels: string[], cu
   return step;
 }
 
+/**
+ * Next step for sources that offer several equivalent lines (Flicx): try the following untried line,
+ * wrapping around, at most MAX_AUTO_FALLBACKS times per item. tried holds 'q:<i>' keys already attempted.
+ */
+export function decideLineFallback(lineLabels: string[], currentLine: number, tried: string[]): FallbackStep {
+  const step = new FallbackStep();
+  const n = lineLabels.length;
+  if (n < 2 || tried.length >= MAX_AUTO_FALLBACKS + 1) {
+    return step;
+  }
+  const from = currentLine >= 0 && currentLine < n ? currentLine : -1;
+  for (let k = 1; k <= n; k++) {
+    const i = (from + k + n) % n;
+    if (i !== from && tried.indexOf('q:' + i) < 0) {
+      step.action = 'quality';
+      step.qualityIndex = i;
+      step.key = 'q:' + i;
+      step.banner = (from >= 0 ? lineLabels[from] + ' 无法播放，' : '') + '已切换到 ' + lineLabels[i];
+      return step;
+    }
+  }
+  return step;
+}
+
 // ---------- super resolution ----------
 
 /** Super resolution only helps sources whose short side is below 1080 px. */
@@ -538,4 +562,83 @@ export function buildInfoRows(s: StatsInput): InfoRow[] {
     rows.push(new InfoRow('服务器', s.serverIp));
   }
   return rows;
+}
+
+// ---------- HLS variants (fixed resolution) ----------
+
+export class HlsVariant {
+  bandwidth: number = 0;
+  width: number = 0;
+  height: number = 0;
+}
+
+/** #EXT-X-STREAM-INF entries of a master playlist, highest bandwidth first, duplicates (same bandwidth) dropped. */
+export function parseHlsVariants(text: string): HlsVariant[] {
+  const out: HlsVariant[] = [];
+  if (typeof text !== 'string' || text.indexOf('#EXT-X-STREAM-INF') < 0) {
+    return out;
+  }
+  const seen = new Set<number>();
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith('#EXT-X-STREAM-INF:')) {
+      continue;
+    }
+    const bw = /(?:^|[:,])BANDWIDTH=(\d+)/.exec(line);
+    if (bw === null) {
+      continue;
+    }
+    const v = new HlsVariant();
+    v.bandwidth = Number(bw[1]);
+    const res = /(?:^|[:,])RESOLUTION=(\d+)x(\d+)/.exec(line);
+    if (res !== null) {
+      v.width = Number(res[1]);
+      v.height = Number(res[2]);
+    }
+    if (v.bandwidth > 0 && !seen.has(v.bandwidth)) {
+      seen.add(v.bandwidth);
+      out.push(v);
+    }
+  }
+  return out.sort((a: HlsVariant, b: HlsVariant) => b.bandwidth - a.bandwidth);
+}
+
+/** "4K", "1080p", ... from the short side; falls back to the bitrate. */
+export function variantLabel(v: HlsVariant): string {
+  const short = v.width > 0 && v.height > 0 ? Math.min(v.width, v.height) : 0;
+  if (short >= 2000) {
+    return '4K';
+  }
+  if (short >= 1400) {
+    return '1440p';
+  }
+  if (short > 0) {
+    const steps = [1080, 720, 540, 480, 360, 240];
+    for (const s of steps) {
+      if (short >= s * 0.9) {
+        return s + 'p';
+      }
+    }
+    return short + 'p';
+  }
+  return (v.bandwidth / 1e6).toFixed(1) + ' Mbps';
+}
+
+/** Variant to lock for a wanted height: the tallest one not above it, else the shortest. undefined for an empty list. */
+export function pickVariant(list: HlsVariant[], wantHeight: number): HlsVariant | undefined {
+  if (list.length === 0) {
+    return undefined;
+  }
+  const h = (v: HlsVariant): number => v.width > 0 && v.height > 0 ? Math.min(v.width, v.height) : 0;
+  let best: HlsVariant | undefined = undefined;
+  for (const v of list) {
+    if (h(v) <= wantHeight * 1.05 && (best === undefined || h(v) > h(best) ||
+      (h(v) === h(best) && v.bandwidth > best.bandwidth))) {
+      best = v;
+    }
+  }
+  if (best !== undefined) {
+    return best;
+  }
+  return list.reduce((a: HlsVariant, b: HlsVariant) => (h(b) < h(a) ? b : a));
 }

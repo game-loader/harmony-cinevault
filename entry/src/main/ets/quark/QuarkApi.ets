@@ -5,6 +5,7 @@ import {
   QuarkPlayBody, QuarkPlayResp, QuarkVideoEntry, QuarkQuality, QuarkLink, QuarkError, QuarkAccountResp, resolutionLabel, resolutionRank,
   QuarkDrive
 } from './QuarkTypes';
+import { AppLog } from '../common/AppLog';
 
 /** Cookies the server re-issues and that we merge back into the stored cookie. */
 const ROLLING_COOKIES: string[] = ['__puus', '__pus'];
@@ -296,7 +297,7 @@ export class QuarkApi implements QuarkDrive {
     await this.call('GET', '/config', QuarkApi.noQuery(), undefined, stripped);
     this.lastRefresh = Date.now();
     if (CookieUtil.get(this.cookie, '__puus') === before) {
-      console.info('[quark] __puus not re-issued, keeping existing value');
+      AppLog.info('[quark] __puus not re-issued, keeping existing value');
     }
   }
 
@@ -312,7 +313,7 @@ export class QuarkApi implements QuarkDrive {
       try {
         await this.refreshPuus();
       } catch (e) {
-        console.warn('[quark] refresh __puus failed: ' + (e as Error).message);
+        AppLog.warn('[quark] refresh __puus failed: ' + (e as Error).message);
         this.lastRefresh = Date.now() - QuarkConst.PUUS_REFRESH_MS + 5 * 60 * 1000; // retry in 5 min
       } finally {
         this.refreshing = undefined;

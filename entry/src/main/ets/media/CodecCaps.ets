@@ -3,6 +3,7 @@ import { nativeProbeJson } from './NativeProbe';
 import {
   CodecEntry, DecoderInfo, parseProbeJson, findEntry, hasDecoder, hasHardware, maxHeightOf, pickDecoder, formatReport
 } from './ProfileBuilder';
+import { AppLog } from '../common/AppLog';
 
 // The data classes live in the pure ProfileBuilder module so they can be unit-tested; re-exported here (contract).
 export { CodecEntry, DecoderInfo };
@@ -21,7 +22,7 @@ export class CodecCaps {
     try {
       json = nativeProbeJson();
     } catch (e) {
-      console.error(`[CodecCaps] probe failed: ${(e as Error).message}`);
+      AppLog.error(`[CodecCaps] probe failed: ${(e as Error).message}`);
     }
     CodecCaps.cache = parseProbeJson(json);
     CodecCaps.loaded = true;
@@ -65,7 +66,7 @@ export class CodecCaps {
       header.push('设备: ' + deviceInfo.marketName + ' (' + deviceInfo.productModel + ')');
       header.push('系统: ' + deviceInfo.osFullName + ' / API ' + deviceInfo.sdkApiVersion);
     } catch (e) {
-      console.warn(`[CodecCaps] deviceInfo unavailable: ${(e as Error).message}`);
+      AppLog.warn(`[CodecCaps] deviceInfo unavailable: ${(e as Error).message}`);
     }
     return formatReport(CodecCaps.entries(), header);
   }

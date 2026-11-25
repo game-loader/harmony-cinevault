@@ -11,7 +11,7 @@ import { LibraryGrid } from '../components/LibraryGrid';
 import { LoadingView, EmptyView, ErrorView, InlineWarning } from '../components/StateViews';
 import { itemKey, errMessage } from '../components/MediaLogic';
 
-type Phase = 'init' | 'welcome' | 'home';
+type Phase = 'init' | 'home';
 
 @Entry
 @Component
@@ -93,11 +93,7 @@ struct IndexPage {
     this.homeSourceId = st.homeSourceId;
     this.lastHomeSource = st.homeSourceId;
     this.hasTmdbKey = st.tmdbApiKey.length > 0;
-    if (this.sources.length === 0) {
-      this.phase = 'welcome';
-      this.home = undefined;
-      return;
-    }
+    // Flicx is built in, so the home page always has something to show, even with no servers added.
     this.phase = 'home';
     const cached = HomeData.cached();
     if (cached !== undefined && !silent) {
@@ -248,67 +244,6 @@ struct IndexPage {
     }
   }
   @Builder
-  welcome() {
-    Column({ space: 18 }) {
-      Text('影')
-        .fontSize(44).fontWeight(FontWeight.Bolder).fontColor(Color.White)
-        .width(88).height(88).textAlign(TextAlign.Center)
-        .borderRadius(22).backgroundColor(Theme.accent)
-      Text('欢迎使用影库').fontSize(28).fontWeight(FontWeight.Bold).fontColor(Theme.text)
-      Text('使用内置 Flicx 搜索电影和剧集，也可以连接 Emby / Jellyfin 服务器或登录夸克网盘。')
-        .fontSize(14).fontColor(Theme.text2).textAlign(TextAlign.Center).lineHeight(22)
-        .constraintSize({ maxWidth: 460 })
-      Column({ space: 12 }) {
-        Button() {
-          Row({ space: 8 }) {
-            SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([Color.White])
-            Text('搜索电影和剧集').fontSize(16).fontColor(Color.White).fontWeight(FontWeight.Medium)
-          }
-        }
-        .type(ButtonType.Capsule).backgroundColor(Theme.accent)
-        .width('100%').height(48)
-        .defaultFocus(true)
-        .onClick(() => Nav.search())
-        Button() {
-          Row({ space: 8 }) {
-            SymbolGlyph($r('sys.symbol.cloud')).fontSize(18).fontColor([Theme.text])
-            Text('添加 Emby / Jellyfin').fontSize(16).fontColor(Theme.text).fontWeight(FontWeight.Medium)
-          }
-        }
-        .type(ButtonType.Capsule).backgroundColor(Theme.surface2)
-        .width('100%').height(48)
-        .onClick(() => Nav.editServer('', 'emby'))
-        Button() {
-          Row({ space: 8 }) {
-            SymbolGlyph($r('sys.symbol.folder')).fontSize(18).fontColor([Theme.text])
-            Text('登录夸克网盘').fontSize(16).fontColor(Theme.text).fontWeight(FontWeight.Medium)
-          }
-        }
-        .type(ButtonType.Capsule).backgroundColor(Theme.surface2)
-        .width('100%').height(48)
-        .onClick(() => Nav.quarkLogin(''))
-      }
-      .width('100%')
-      .constraintSize({ maxWidth: 360 })
-      .margin({ top: 8 })
-      Row({ space: 6 }) {
-        SymbolGlyph($r('sys.symbol.info_circle')).fontSize(14).fontColor([Theme.text3])
-        Text(this.hasTmdbKey ? '已启用中文片名搜索'
-          : '可直接搜英文片名。在「设置 › 刮削」填写 TMDB 密钥即可搜中文片名。')
-          .fontSize(12).fontColor(Theme.text3)
-      }
-      .margin({ top: 8 })
-      .onClick(() => Nav.settings())
-      Text('打开设置').fontSize(13).fontColor(Theme.accent)
-        .onClick(() => Nav.settings())
-    }
-    .width('100%').height('100%')
-    .padding(32)
-    .justifyContent(FlexAlign.Center)
-    .backgroundColor(Theme.bg)
-  }
-
-  @Builder
   libraryChips() {
     if (this.home !== undefined) {
       Column({ space: 10 }) {
@@ -330,8 +265,17 @@ struct IndexPage {
                 () => this.openView(v))
             }
           }, (v: LibraryView) => v.sourceId + '|' + v.id)
-          ListItem() {
-            this.chip('收藏', $r('sys.symbol.heart'), () => this.openMode('favorites', '收藏'))
+          if (this.sources.length > 0) {
+            ListItem() {
+              this.chip('收藏', $r('sys.symbol.heart'), () => this.openMode('favorites', '收藏'))
+            }
+          } else {
+            ListItem() {
+              this.chip('添加 Emby / Jellyfin', $r('sys.symbol.cloud'), () => Nav.editServer('', 'emby'))
+            }
+            ListItem() {
+              this.chip('登录夸克网盘', $r('sys.symbol.folder'), () => Nav.quarkLogin(''))
+            }
           }
         }
         .listDirection(Axis.Horizontal)
@@ -340,6 +284,15 @@ struct IndexPage {
         .contentEndOffset(this.sidePad())
         .height(44)
         .width('100%')
+        if (!this.hasTmdbKey) {
+          Row({ space: 6 }) {
+            SymbolGlyph($r('sys.symbol.info_circle')).fontSize(14).fontColor([Theme.text3])
+            Text('可直接搜英文片名。在「设置 › 刮削」填写 TMDB 密钥即可搜中文片名。')
+              .fontSize(12).fontColor(Theme.text3).layoutWeight(1)
+          }
+          .padding({ left: this.sidePad(), right: this.sidePad() })
+          .onClick(() => Nav.settings())
+        }
       }
       .alignItems(HorizontalAlign.Start)
       .width('100%')
@@ -438,8 +391,9 @@ struct IndexPage {
             if (this.home.rows.length === 0) {
               ListItem() {
                 EmptyView({
-                  title: '媒体库还没有内容',
-                  message: '服务器上暂无影片，或夸克网盘尚未扫描。可在设置中选择媒体文件夹并开始扫描。',
+                  title: this.sources.length === 0 ? '首页暂时没有内容' : '媒体库还没有内容',
+                  message: this.sources.length === 0 ? 'Flicx 首页没有加载出来。下拉刷新重试，或直接使用搜索。'
+                    : '服务器上暂无影片，或夸克网盘尚未扫描。可在设置中选择媒体文件夹并开始扫描。',
                   actionText: '打开设置',
                   onAction: () => Nav.settings()
                 }).height(320)
@@ -530,8 +484,6 @@ struct IndexPage {
     Stack() {
       if (this.phase === 'init') {
         LoadingView({ message: '正在启动…' })
-      } else if (this.phase === 'welcome') {
-        this.welcome()
       } else if (this.isLarge()) {
         Row() {
           Sidebar({

@@ -15,6 +15,7 @@ import { DEFAULT_MAX_BITRATE } from './DeviceProfile';
 import { buildProfile, ProfileOptions } from '../media/ProfileBuilder';
 import { CodecCaps } from '../media/CodecCaps';
 import { Settings, AppSettings } from '../common/Settings';
+import { AppLog } from '../common/AppLog';
 
 /** Bitrate cap for a forced transcode when the user hasn't chosen one. */
 const FORCED_TRANSCODE_BITRATE: number = 8000000;
@@ -447,7 +448,7 @@ export class EmbyProvider implements MediaProvider {
       await this.send('POST', path, {}, body, '上报播放进度失败');
     } catch (e) {
       // Reporting is best effort: a flaky network must not interrupt playback.
-      console.warn('[EmbyProvider] report ' + path + ' failed: ' + (e as Error).message);
+      AppLog.warn('[EmbyProvider] report ' + path + ' failed: ' + (e as Error).message);
     }
   }
 
@@ -468,7 +469,7 @@ export class EmbyProvider implements MediaProvider {
       try {
         await this.send('DELETE', '/Videos/ActiveEncodings', p, undefined, '停止转码失败');
       } catch (e) {
-        console.warn('[EmbyProvider] stop encoding failed: ' + (e as Error).message);
+        AppLog.warn('[EmbyProvider] stop encoding failed: ' + (e as Error).message);
       }
     }
   }

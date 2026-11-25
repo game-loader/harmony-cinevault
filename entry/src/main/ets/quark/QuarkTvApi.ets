@@ -9,6 +9,7 @@ import {
   QuarkTvConst, signRequest, apiQuery, tokenBody, encodeQuery, isTokenInvalid, isLoginPending, qrDataUri, tvToFile,
   hasMorePages, tvQualities, tvNickname, newDeviceId
 } from './QuarkTvSign';
+import { AppLog } from '../common/AppLog';
 
 const RELOGIN_MSG: string = '夸克登录已失效，请重新登录';
 
@@ -308,7 +309,7 @@ export class QuarkTvApi implements QuarkDrive {
     try {
       await this.refreshAccess();
     } catch (e) {
-      console.warn('[quarktv] refresh failed: ' + (e as Error).message);
+      AppLog.warn('[quarktv] refresh failed: ' + (e as Error).message);
     }
   }
 

@@ -4,6 +4,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { SourceConfig, SourceKind } from './Models';
 import { AppContext } from './AppContext';
 import { Settings } from './Settings';
+import { AppLog } from './AppLog';
 
 interface StoredSource {
   id?: string;
@@ -77,7 +78,7 @@ export class SourceStore {
       }
     } catch (e) {
       const err = e as BusinessError;
-      console.error(`[SourceStore] load failed: ${err.code} ${err.message}`);
+      AppLog.error(`[SourceStore] load failed: ${err.code} ${err.message}`);
     }
     SourceStore.items = out;
     SourceStore.loaded = true;
@@ -204,7 +205,7 @@ export class SourceStore {
       try {
         ls[i]();
       } catch (e) {
-        console.error(`[SourceStore] listener error: ${(e as Error).message}`);
+        AppLog.error(`[SourceStore] listener error: ${(e as Error).message}`);
       }
     }
   }
@@ -218,7 +219,7 @@ export class SourceStore {
       await SourceStore.store.flush();
     } catch (e) {
       const err = e as BusinessError;
-      console.error(`[SourceStore] save failed: ${err.code} ${err.message}`);
+      AppLog.error(`[SourceStore] save failed: ${err.code} ${err.message}`);
     }
   }
 }

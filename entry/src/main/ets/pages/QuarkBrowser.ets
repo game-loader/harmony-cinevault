@@ -8,6 +8,7 @@ import { Scraper, ScanProgress } from '../scraper/Scraper';
 import { QuarkProvider } from '../quark/QuarkProvider';
 import { QuarkFile } from '../quark/QuarkTypes';
 import { formatSize, isVideoName, isSubtitleName, fileExt } from '../quark/CookieUtil';
+import { AppLog } from '../common/AppLog';
 
 class Crumb {
   fid: string = '';
@@ -53,7 +54,7 @@ struct QuarkBrowserPage {
     try {
       await SourceStore.load();
     } catch (e) {
-      console.warn('[QuarkBrowser] load sources: ' + (e as Error).message);
+      AppLog.warn('[QuarkBrowser] load sources: ' + (e as Error).message);
     }
     const cfg = SourceStore.get(this.sourceId);
     if (cfg === undefined || cfg.kind !== 'quark') {
@@ -157,7 +158,7 @@ struct QuarkBrowserPage {
     try {
       promptAction.showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.error('[QuarkBrowser] toast: ' + (e as Error).message);
+      AppLog.error('[QuarkBrowser] toast: ' + (e as Error).message);
     }
   }
 

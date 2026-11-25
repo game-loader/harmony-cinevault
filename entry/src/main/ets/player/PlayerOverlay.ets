@@ -14,6 +14,8 @@ export struct PlayerOverlay {
   @Prop showControls: boolean = true;
   @Prop speedText: string = '倍速';
   @Prop qualityText: string = '画质';
+  /** Current resolution label ('自动', '1080p', ...); '' hides the button (single-variant streams). */
+  @Prop resolutionText: string = '';
   @Prop aspectText: string = '画面';
   @Prop hasEpisodes: boolean = false;
   @Prop hasNext: boolean = false;
@@ -31,33 +33,73 @@ export struct PlayerOverlay {
   onPrev: () => void = () => {};
   onInteract: () => void = () => {};
 
+  /** Bottom-right function area: icon over a short label; collapses to icon-only on narrow screens. */
   @Builder
-  barButton(label: string, key: string) {
-    Text(label)
-      .fontSize(14)
-      .fontColor(Theme.text)
-      .padding({ left: 12, right: 12, top: 8, bottom: 8 })
-      .borderRadius(16)
-      .onClick(() => {
-        this.onInteract();
-        this.onMenu(key);
-      })
+  barButton(icon: Resource, label: string, key: string) {
+    Column({ space: 2 }) {
+      SymbolGlyph(icon).fontSize(20).fontColor([Color.White])
+      if (!this.compact()) {
+        Text(label)
+          .fontSize(10).fontColor('#D9FFFFFF')
+          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          .constraintSize({ maxWidth: 64 })
+      }
+    }
+    .constraintSize({ minWidth: 44 })
+    .height(44)
+    .padding({ left: 6, right: 6 })
+    .justifyContent(FlexAlign.Center)
+    .borderRadius(10)
+    .onClick(() => {
+      this.onInteract();
+      this.onMenu(key);
+    })
   }
 
   @Builder
-  roundButton(label: string, size: number, fontSize: number, action: () => void) {
-    Text(label)
-      .fontSize(fontSize)
-      .fontColor(Color.White)
-      .textAlign(TextAlign.Center)
-      .width(size)
-      .height(size)
-      .borderRadius(size / 2)
-      .backgroundColor('#55000000')
-      .onClick(() => {
-        this.onInteract();
-        action();
-      })
+  iconButton(icon: Resource, key: string) {
+    Row() {
+      SymbolGlyph(icon).fontSize(24).fontColor([Color.White])
+    }
+    .width(44).height(44).justifyContent(FlexAlign.Center)
+    .borderRadius(22)
+    .onClick(() => {
+      this.onInteract();
+      this.onMenu(key);
+    })
+  }
+
+  /** Round glass button for the centre row and the top bar. */
+  @Builder
+  glassButton(icon: Resource, size: number, iconSize: number, action: () => void) {
+    Row() {
+      SymbolGlyph(icon).fontSize(iconSize).fontColor([Color.White])
+    }
+    .width(size).height(size).borderRadius(size / 2)
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#40000000')
+    .backdropBlur(16)
+    .onClick(() => {
+      this.onInteract();
+      action();
+    })
+  }
+
+  /** Width of the overlay in vp; Pura X Max inner screen is ~795 vp landscape, cover ~569 vp landscape. */
+  @State private areaW: number = 0;
+  @State private areaH: number = 0;
+
+  private compact(): boolean {
+    return this.areaW > 0 && this.areaW < 680;
+  }
+
+  /** Short screens (foldable landscape ~560 vp tall): smaller centre buttons and tighter bars. */
+  private short(): boolean {
+    return this.areaH > 0 && this.areaH < 600;
+  }
+
+  private pad(): number {
+    return this.areaW >= 840 ? 32 : (this.areaW >= 600 ? 24 : 16);
   }
 
   private bufferedRatio(): number {
@@ -73,7 +115,7 @@ export struct PlayerOverlay {
         Column() {
           // top bar
           Row() {
-            this.roundButton('‹', 40, 26, () => this.onBack())
+            this.glassButton($r('sys.symbol.chevron_left'), 40, 20, () => this.onBack())
             Column() {
               Text(this.title)
                 .fontSize(18)
@@ -95,21 +137,24 @@ export struct PlayerOverlay {
             .margin({ left: 12 })
           }
           .width('100%')
-          .padding({ left: 24, right: 24, top: 16, bottom: 28 })
+          .padding({ left: this.pad(), right: this.pad(), top: this.short() ? 12 : 16, bottom: 28 })
           .linearGradient({ angle: 180, colors: [['#B0000000', 0], ['#00000000', 1]] })
 
           Blank().layoutWeight(1)
 
           // center controls
-          Row({ space: 40 }) {
+          Row({ space: this.short() ? 28 : 40 }) {
             if (this.hasPrev) {
-              this.roundButton('⏮', 48, 20, () => this.onPrev())
+              this.glassButton($r('sys.symbol.backward_end_fill'), this.short() ? 44 : 48, 20, () => this.onPrev())
             }
-            this.roundButton('-10', 56, 16, () => this.onSeekRel(-10000))
-            this.roundButton(this.playing ? '❚❚' : '▶', 72, 26, () => this.onToggle())
-            this.roundButton('+10', 56, 16, () => this.onSeekRel(10000))
+            this.glassButton($r('sys.symbol.gobackward_10'), this.short() ? 52 : 56, this.short() ? 26 : 28,
+              () => this.onSeekRel(-10000))
+            this.glassButton(this.playing ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'),
+              this.short() ? 64 : 72, this.short() ? 30 : 34, () => this.onToggle())
+            this.glassButton($r('sys.symbol.goforward_10'), this.short() ? 52 : 56, this.short() ? 26 : 28,
+              () => this.onSeekRel(10000))
             if (this.hasNext) {
-              this.roundButton('⏭', 48, 20, () => this.onNext())
+              this.glassButton($r('sys.symbol.forward_end_fill'), this.short() ? 44 : 48, 20, () => this.onNext())
             }
           }
           .justifyContent(FlexAlign.Center)
@@ -167,31 +212,36 @@ export struct PlayerOverlay {
             }
             .width('100%')
 
-            Row() {
-              this.barButton(this.playing ? '暂停' : '播放', 'toggle')
+            Row({ space: 2 }) {
+              this.iconButton(this.playing ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'), 'toggle')
               if (this.hasNext) {
-                this.barButton('下一集', 'next')
+                this.iconButton($r('sys.symbol.forward_end_fill'), 'next')
               }
               Blank().layoutWeight(1)
-              this.barButton(this.speedText, 'speed')
-              this.barButton(this.qualityText, 'quality')
+              this.barButton($r('sys.symbol.double_speed'), this.speedText, 'speed')
+              this.barButton($r('sys.symbol.dot_radiowaves'), this.qualityText, 'quality')
+              if (this.resolutionText.length > 0) {
+                this.barButton($r('sys.symbol.display'), this.resolutionText === '自动' ? '分辨率' : this.resolutionText,
+                  'resolution')
+              }
               if (this.hasAudio) {
-                this.barButton('音轨', 'audio')
+                this.barButton($r('sys.symbol.speaker_wave_2'), '音轨', 'audio')
               }
               if (this.hasSubtitle) {
-                this.barButton('字幕', 'subtitle')
+                this.barButton($r('sys.symbol.AI_subtitles'), '字幕', 'subtitle')
               }
-              this.barButton(this.aspectText, 'aspect')
+              this.barButton($r('sys.symbol.aspect_ratio'), this.aspectText, 'aspect')
               if (this.hasEpisodes) {
-                this.barButton('选集', 'episodes')
+                this.barButton($r('sys.symbol.list_badge_play'), '选集', 'episodes')
               }
-              this.barButton('更多', 'more')
+              this.barButton($r('sys.symbol.ellipsis_circle'), '更多', 'more')
             }
             .width('100%')
-            .margin({ top: 4 })
+            .alignItems(VerticalAlign.Center)
+            .margin({ top: this.short() ? 0 : 4 })
           }
           .width('100%')
-          .padding({ left: 24, right: 24, top: 28, bottom: 16 })
+          .padding({ left: this.pad(), right: this.pad(), top: 28, bottom: this.short() ? 8 : 16 })
           .linearGradient({ angle: 0, colors: [['#C0000000', 0], ['#00000000', 1]] })
         }
         .width('100%')
@@ -199,21 +249,26 @@ export struct PlayerOverlay {
         .hitTestBehavior(HitTestMode.Transparent)
       }
 
-      // lock button, always reachable when controls are visible
+      // lock button: always reachable when controls are visible, and the only control while locked
       if (this.showControls) {
         Row() {
-          this.roundButton(this.locked ? '🔒' : '🔓', 48, 20, () => this.onLock())
+          this.glassButton(this.locked ? $r('sys.symbol.lock_fill') : $r('sys.symbol.lock_open_fill'), 44, 20,
+            () => this.onLock())
         }
         .width('100%')
         .height('100%')
         .justifyContent(FlexAlign.Start)
         .alignItems(VerticalAlign.Center)
-        .padding({ left: 24 })
+        .padding({ left: this.pad() })
         .hitTestBehavior(HitTestMode.Transparent)
       }
     }
     .width('100%')
     .height('100%')
     .hitTestBehavior(HitTestMode.Transparent)
+    .onAreaChange((o: Area, n: Area) => {
+      this.areaW = Number(n.width);
+      this.areaH = Number(n.height);
+    })
   }
 }

@@ -9,6 +9,7 @@
     "pages/ServerEdit",
     "pages/QuarkLogin",
     "pages/QuarkBrowser",
-    "pages/CodecInfo"
+    "pages/CodecInfo",
+    "pages/LogView"
   ]
 }

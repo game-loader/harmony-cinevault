@@ -1,12 +1,16 @@
 import { MediaProvider } from '../common/MediaProvider';
-import { LibraryView, MediaItem, PagedItems, PlaybackInfo, PlaybackRequest, QueryOptions, SourceConfig,
+import { HomeRow, LibraryView, MediaItem, PagedItems, Person, PlaybackInfo, PlaybackRequest, QualityOption, QueryOptions, SourceConfig,
   SubtitleTrack } from '../common/Models';
 import { Settings } from '../common/Settings';
+import { SourceStore } from '../common/SourceStore';
+import { AppLog } from '../common/AppLog';
 import { TmdbClient } from '../scraper/TmdbClient';
 import { TmdbDetail, TmdbSeason, TmdbSeasonSummary } from '../scraper/TmdbTypes';
 import { FlicxApi } from './FlicxApi';
 import { FlicxMapper, FLICX_ID } from './FlicxMapper';
-import { FlicxEpisode, FlicxId, FlicxSeasonRow } from './FlicxModels';
+import { FlicxEpisode, FlicxId, FlicxSeasonRow, FlicxTitleItem } from './FlicxModels';
+import { FlicxTitlePage } from './FlicxHome';
+import { FlicxLibrary, toItem, SavedTitle } from './FlicxLibrary';
 import { FlicxSearch } from './FlicxSearch';
 
 class CatalogTitle {
@@ -38,6 +42,30 @@ export class FlicxProvider implements MediaProvider {
     this.config.name = 'Flicx';
   }
 
+  private homeCache: HomeRow[] = [];
+  private homeAt: number = 0;
+  private homeLoad: Promise<HomeRow[]> | undefined = undefined;
+
+  /** Flicx home page rails, cached for 10 minutes; force bypasses the cache (pull to refresh). */
+  async home(force: boolean): Promise<HomeRow[]> {
+    if (!force && this.homeCache.length > 0 && Date.now() - this.homeAt < 600000) {
+      return this.homeCache;
+    }
+    if (this.homeLoad === undefined) {
+      this.homeLoad = FlicxApi.home().then((rows: HomeRow[]) => {
+        rows.forEach((r: HomeRow) => this.catalog.rememberSite(r.items));
+        this.homeCache = rows;
+        this.homeAt = Date.now();
+        this.homeLoad = undefined;
+        return rows;
+      }, (e: Object) => {
+        this.homeLoad = undefined;
+        throw e as Error;
+      });
+    }
+    return this.homeLoad;
+  }
+
   search(term: string, limit: number): Promise<MediaItem[]> {
     return this.catalog.search(term, limit);
   }
@@ -64,9 +92,51 @@ export class FlicxProvider implements MediaProvider {
       }
     }
     if (site) {
+      await this.enrich(site, id.kind);
       return new CatalogTitle(site, site.slug);
     }
     throw new Error('请重新搜索英文片名，或在设置中填写 TMDB API Key 以加载详情');
+  }
+
+  /** Without TMDB, the synopsis and credits come from the title's Flicx page (fetched once per title). */
+  private async enrich(site: FlicxTitleItem, kind: 'movie' | 'tv'): Promise<void> {
+    if (site.pageLoaded || !site.slug) {
+      return;
+    }
+    const page: FlicxTitlePage | undefined = await FlicxApi.titlePage(kind, site.slug);
+    if (page === undefined) {
+      return;
+    }
+    site.pageLoaded = true;
+    site.overview = site.overview || page.overview;
+    site.premiereDate = site.premiereDate || page.premiereDate;
+    site.runtimeMs = site.runtimeMs || page.runtimeMs;
+    site.officialRating = site.officialRating || page.officialRating;
+    if (page.genres.length > site.genres.length) {
+      site.genres = page.genres;
+    }
+    if (site.studios.length === 0) {
+      site.studios = page.studios;
+    }
+    if (site.people.length === 0 && page.people.length > 0) {
+      site.people = page.people;
+    }
+    if (site.people.length === 0) {
+      const people: Person[] = [];
+      page.directors.forEach((n: string) => {
+        const p = new Person();
+        p.name = n;
+        p.role = kind === 'movie' ? '导演' : '主创';
+        people.push(p);
+      });
+      page.actors.forEach((n: string) => {
+        const p = new Person();
+        p.name = n;
+        people.push(p);
+      });
+      site.people = people;
+    }
+    site.images.backdrop = site.images.backdrop || page.backdrop;
   }
 
   private async seasonItems(title: CatalogTitle): Promise<MediaItem[]> {
@@ -136,27 +206,70 @@ export class FlicxProvider implements MediaProvider {
     return eps.map((e: FlicxEpisode) => this.siteEpisode(season, series, e));
   }
 
+  /** Slug for a root id, so saved entries can reopen details without TMDB. */
+  private slugFor(id: string): string {
+    const ref = FlicxMapper.parseMediaId(id);
+    if (ref === undefined) {
+      return '';
+    }
+    return this.catalog.siteTitle(FlicxMapper.mediaId(ref.kind, ref.imdbId))?.slug ?? '';
+  }
+
+  /** Re-seed the site-title cache from saved entries (app restart, no TMDB key). */
+  private restoreSite(rootId: string): void {
+    if (this.catalog.siteTitle(rootId) !== undefined) {
+      return;
+    }
+    const s = FlicxLibrary.state.get(rootId);
+    if (s !== undefined && s.slug) {
+      const it = new FlicxTitleItem();
+      it.id = s.id;
+      it.sourceId = FLICX_ID;
+      it.type = s.type === 'series' ? 'series' : 'movie';
+      it.title = s.title;
+      it.year = s.year;
+      it.rating = s.rating;
+      it.imdbId = s.imdbId;
+      it.slug = s.slug;
+      it.images.poster = s.poster;
+      it.images.backdrop = s.backdrop;
+      it.runtimeMs = s.runtimeMs;
+      this.catalog.rememberSite([it]);
+    }
+  }
+
   async getItem(value: string): Promise<MediaItem> {
+    await FlicxLibrary.load();
     const id = parseId(value);
+    this.restoreSite(FlicxMapper.mediaId(id.kind, id.imdbId));
     const title = await this.title(id);
     if (id.season < 0) {
-      return title.item;
+      return FlicxLibrary.state.apply(title.item);
     }
     const items = id.episode < 0 ? await this.seasonItems(title) : await this.episodeItems(title, id.season);
     const match = items.find((item: MediaItem) => item.id === value);
     if (!match) {
       throw new Error('没有找到所选的季或集');
     }
-    return match;
+    return FlicxLibrary.state.apply(match);
   }
 
   async getSeasons(seriesId: string): Promise<MediaItem[]> {
+    await FlicxLibrary.load();
     const ref = parseId(seriesId);
+    this.restoreSite(FlicxMapper.mediaId(ref.kind, ref.imdbId));
     return ref.kind === 'tv' ? this.seasonItems(await this.title(ref)) : [];
   }
 
   async getEpisodes(seriesId: string, seasonId: string): Promise<MediaItem[]> {
+    await FlicxLibrary.load();
+    const list = await this.loadEpisodes(seriesId, seasonId);
+    return list.map((e: MediaItem) => FlicxLibrary.state.apply(e));
+  }
+
+  private async loadEpisodes(seriesId: string, seasonId: string): Promise<MediaItem[]> {
     const series = parseId(seriesId);
+    this.restoreSite(FlicxMapper.mediaId(series.kind, series.imdbId));
     if (series.kind !== 'tv') {
       return [];
     }
@@ -182,6 +295,8 @@ export class FlicxProvider implements MediaProvider {
     const tracks = FlicxApi.subtitles(ref.imdbId, ref.season, ref.episode).catch((): SubtitleTrack[] => []);
     const info = new PlaybackInfo();
     info.qualities = await options;
+    AppLog.info(`[Flicx] ${item.id}: ${info.qualities.length} lines: ` +
+      info.qualities.map((q: QualityOption) => q.label).join(' | '));
     if (!info.qualities.length) {
       throw new Error('Flicx 暂无这部影片或这一集的可用线路');
     }
@@ -206,15 +321,72 @@ export class FlicxProvider implements MediaProvider {
   // Public search source. There is no personal Flicx account or library to sync.
   async connect(): Promise<void> {}
   async getViews(): Promise<LibraryView[]> { return []; }
-  async getResume(_limit: number): Promise<MediaItem[]> { return []; }
+  async getResume(limit: number): Promise<MediaItem[]> {
+    await FlicxLibrary.load();
+    return FlicxLibrary.state.resume().slice(0, limit).map((s: SavedTitle) => toItem(s, FLICX_ID));
+  }
   async getNextUp(_limit: number): Promise<MediaItem[]> { return []; }
   async getLatest(_parentId: string, _limit: number): Promise<MediaItem[]> { return []; }
-  async getItems(_q: QueryOptions): Promise<PagedItems> { return new PagedItems(); }
+  /**
+   * Movie/TV tabs list the titles from the home page rails while no personal server is added.
+   * Once one is, those tabs show only the user's own library.
+   */
+  async getItems(q: QueryOptions): Promise<PagedItems> {
+    const page = new PagedItems();
+    if (q.favoritesOnly) {
+      await FlicxLibrary.load();
+      const favs = FlicxLibrary.state.favorites().map((s: SavedTitle) => toItem(s, FLICX_ID))
+        .filter((it: MediaItem) => q.types.length === 0 || q.types.indexOf(it.type) >= 0);
+      page.total = favs.length;
+      page.items = favs.slice(q.startIndex, q.startIndex + q.limit);
+      return page;
+    }
+    if (q.parentId || SourceStore.list().length > 0) {
+      return page;
+    }
+    const seen = new Set<string>();
+    const all: MediaItem[] = [];
+    for (const row of await this.home(false)) {
+      for (const item of row.items) {
+        if (seen.has(item.id) || (q.types.length > 0 && q.types.indexOf(item.type) < 0) ||
+          (q.genres.length > 0 && !item.genres.some((g: string) => q.genres.indexOf(g) >= 0)) ||
+          (q.years.length > 0 && q.years.indexOf(item.year) < 0)) {
+          continue;
+        }
+        seen.add(item.id);
+        all.push(item);
+      }
+    }
+    page.total = all.length;
+    page.items = all.slice(q.startIndex, q.startIndex + q.limit);
+    return page;
+  }
   async getSimilar(_id: string, _limit: number): Promise<MediaItem[]> { return []; }
   async getGenres(_parentId: string): Promise<string[]> { return []; }
-  async reportStart(_item: MediaItem, _info: PlaybackInfo, _positionMs: number): Promise<void> {}
-  async reportProgress(_item: MediaItem, _info: PlaybackInfo, _positionMs: number, _paused: boolean): Promise<void> {}
-  async reportStopped(_item: MediaItem, _info: PlaybackInfo, _positionMs: number): Promise<void> {}
-  async setPlayed(_item: MediaItem, _played: boolean): Promise<void> { throw new Error('Flicx 搜索源暂不保存已看标记'); }
-  async setFavorite(_item: MediaItem, _favorite: boolean): Promise<void> { throw new Error('Flicx 搜索源暂不保存收藏'); }
+  // Flicx has no account: progress, watched marks and favourites are kept on this device.
+  async reportStart(item: MediaItem, info: PlaybackInfo, positionMs: number): Promise<void> {
+    await this.saveProgress(item, info, positionMs);
+  }
+  async reportProgress(item: MediaItem, info: PlaybackInfo, positionMs: number, _paused: boolean): Promise<void> {
+    await this.saveProgress(item, info, positionMs);
+  }
+  async reportStopped(item: MediaItem, info: PlaybackInfo, positionMs: number): Promise<void> {
+    await this.saveProgress(item, info, positionMs);
+  }
+  private async saveProgress(item: MediaItem, info: PlaybackInfo, positionMs: number): Promise<void> {
+    await FlicxLibrary.load();
+    FlicxLibrary.state.setProgress(item, this.slugFor(item.id), positionMs,
+      info.durationMs > 0 ? info.durationMs : item.runtimeMs, Date.now());
+    FlicxLibrary.changed();
+  }
+  async setPlayed(item: MediaItem, played: boolean): Promise<void> {
+    await FlicxLibrary.load();
+    FlicxLibrary.state.setPlayed(item, this.slugFor(item.id), played, Date.now());
+    FlicxLibrary.changed();
+  }
+  async setFavorite(item: MediaItem, favorite: boolean): Promise<void> {
+    await FlicxLibrary.load();
+    FlicxLibrary.state.setFavorite(item, this.slugFor(item.id), favorite, Date.now());
+    FlicxLibrary.changed();
+  }
 }

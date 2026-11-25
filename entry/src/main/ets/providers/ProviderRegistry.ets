@@ -5,6 +5,7 @@ import { EmbyProvider } from './EmbyProvider';
 import { QuarkProvider } from '../quark/QuarkProvider';
 import { FlicxProvider } from '../flicx/FlicxProvider';
 import { FLICX_ID } from '../flicx/FlicxMapper';
+import { AppLog } from '../common/AppLog';
 
 class CacheEntry {
   provider: MediaProvider;
@@ -71,7 +72,7 @@ export class ProviderRegistry {
       ProviderRegistry.cache.set(sourceId, new CacheEntry(p, fp));
       return p;
     } catch (e) {
-      console.error(`[ProviderRegistry] create failed for ${sourceId}: ${(e as Error).message}`);
+      AppLog.error(`[ProviderRegistry] create failed for ${sourceId}: ${(e as Error).message}`);
       return undefined;
     }
   }

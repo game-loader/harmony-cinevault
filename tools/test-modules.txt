@@ -15,7 +15,10 @@ quark/QuarkTvSign
 media/ProfileBuilder
 flicx/FlicxModels
 flicx/FlicxMapper
+flicx/FlicxHome
+flicx/FlicxLibrary
 flicx/FlicxApi
+common/AppLog
 common/Http
 common/Settings
 scraper/TmdbTypes

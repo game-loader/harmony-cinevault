@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
@@ -16,6 +17,10 @@ class HttpError extends Error {
 // Replace only the Harmony network and preferences boundary in this process.
 const stub = (name, exports) => { const id = file(name); require.cache[id] = { id, filename: id, loaded: true, exports }; };
 stub('common/Settings', { Settings: { get: () => ({ ...settings }) } });
+const userSources = [];
+// SourceStore needs relationalStore, so it isn't transpiled; give the resolver a file to find.
+fs.writeFileSync(file('common/SourceStore'), 'module.exports = {};');
+stub('common/SourceStore', { SourceStore: { list: () => userSources.slice() } });
 stub('common/Http', {
   HttpError, buildQuery: p => new URLSearchParams(p).toString(),
   request: async (method, url, headers) => {
@@ -27,7 +32,7 @@ stub('common/Http', {
       assert.equal(headers.Authorization, undefined);
     }
     const data = await respond(u);
-    return { status: 200, body: JSON.stringify(data) };
+    return { status: 200, body: typeof data === 'string' ? data : JSON.stringify(data) };
   }
 });
 const { FlicxApi: api } = require(file('flicx/FlicxApi'));
@@ -154,4 +159,63 @@ test('English movie lookup needs no TMDB credentials to search or play an exact 
   } finally {
     settings.tmdbApiKey = key;
   }
+});
+
+test('home rails come from the fli.cx page, are cached, and open details without TMDB credentials', async () => {
+  const { homeHtml } = await import('./flicx-home.fixture.mjs');
+  const { FlicxProvider } = require(file('flicx/FlicxProvider'));
+  const key = settings.tmdbApiKey;
+  try {
+    settings.tmdbApiKey = '';
+    let pages = 0;
+    let titlePages = 0;
+    respond = u => {
+      assert.equal(u.hostname, 'fli.cx');
+      if (u.pathname === '/') { pages++; return homeHtml; }
+      if (u.pathname === '/movie/the-matrix-1999') {
+        titlePages++;
+        return '<script type="application/ld+json">{"@type":"BreadcrumbList"}</script>' +
+          '<script type="application/ld+json">{"@type":"Movie","description":"A hacker learns the truth.",' +
+          '"datePublished":"1999-03-31","duration":"PT2H16M","genre":["Action","Science Fiction"],' +
+          '"director":[{"@type":"Person","name":"Lana Wachowski"}],"actor":[{"name":"Keanu Reeves"},{"name":""}],' +
+          '"image":["https://s.fli.cx/a/poster/large/tt0133093/img","https://s.fli.cx/a/background/medium/tt0133093/img"]}</script>';
+      }
+      if (u.pathname === '/api/library') return { shows: { 'bodies-2023': { seasons: [{ n: 1, count: 8 }] } } };
+      throw new Error('Unexpected route ' + u.pathname);
+    };
+    const provider = new FlicxProvider();
+    const rows = await provider.home(false);
+    assert.equal(rows[0].title, '本周热门电影');
+    await provider.home(false);
+    assert.equal(pages, 1);
+    await provider.home(true);
+    assert.equal(pages, 2);
+    const movie = await provider.getItem('flicx-movie-tt0133093');
+    assert.deepEqual([movie.title, movie.year], ['The Matrix', 1999]);
+    assert.deepEqual([movie.overview, movie.premiereDate, movie.runtimeMs, movie.genres],
+      ['A hacker learns the truth.', '1999-03-31', 136 * 60000, ['Action', 'Science Fiction']]);
+    assert.deepEqual(movie.people.map(p => [p.name, p.role]), [['Lana Wachowski', '导演'], ['Keanu Reeves', '']]);
+    assert.equal(movie.images.backdrop, 'https://s.fli.cx/t/original/matrix.jpg');
+    await provider.getItem('flicx-movie-tt0133093');
+    assert.equal(titlePages, 1);
+    const seasons = await provider.getSeasons('flicx-tv-tt18347622');
+    assert.deepEqual(seasons.map(s => s.id), ['flicx-tv-tt18347622-s1']);
+
+    const q = { parentId: '', types: ['series'], genres: [], years: [], favoritesOnly: false, startIndex: 0, limit: 60 };
+    assert.deepEqual((await provider.getItems(q)).items.map(i => i.id), ['flicx-tv-tt18347622']);
+    const all = await provider.getItems({ ...q, types: ['movie', 'series'], limit: 2 });
+    assert.deepEqual([all.total, all.items.length], [6, 2]);
+    assert.deepEqual((await provider.getItems({ ...q, favoritesOnly: true })).items, []);
+    userSources.push({ id: 'emby-1' });
+    assert.deepEqual((await provider.getItems({ ...q, types: ['movie'] })).items, []);
+  } finally {
+    settings.tmdbApiKey = key;
+    userSources.length = 0;
+  }
+});
+
+test('a Cloudflare page or changed markup turns into a readable home error', async () => {
+  const { FlicxProvider } = require(file('flicx/FlicxProvider'));
+  respond = () => '<html><title>Just a moment...</title></html>';
+  await assert.rejects(() => new FlicxProvider().home(false), /无法识别 Flicx 首页/);
 });

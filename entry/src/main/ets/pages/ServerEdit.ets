@@ -7,6 +7,7 @@ import { Nav, ServerEditParams } from '../common/Nav';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
 import { EmbyProvider } from '../providers/EmbyProvider';
 import { normalizeServerUrl } from '../components/settings/SettingsLogic';
+import { AppLog } from '../common/AppLog';
 
 @Entry
 @Component
@@ -53,7 +54,7 @@ struct ServerEditPage {
     try {
       promptAction.showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.error(`[ServerEdit] toast: ${(e as Error).message}`);
+      AppLog.error(`[ServerEdit] toast: ${(e as Error).message}`);
     }
   }
 

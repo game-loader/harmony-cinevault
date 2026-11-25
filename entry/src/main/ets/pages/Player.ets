@@ -1,7 +1,7 @@
 import { router, window, promptAction } from '@kit.ArkUI';
 import { audio, AVVolumePanel } from '@kit.AudioKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { PlayerParams } from '../common/Nav';
+import { PlayerParams, Nav } from '../common/Nav';
 import { MediaItem, PlaybackInfo, PlaybackRequest, SubtitleTrack, AudioTrack, QualityOption } from '../common/Models';
 import { CodecCaps, CodecEntry, DecoderInfo } from '../media/CodecCaps';
 import { MediaProvider } from '../common/MediaProvider';
@@ -15,14 +15,17 @@ import { PlayerController, PlayerCallbacks, OpenOptions, EmbeddedTrack, NetStats
 import { PlayerOverlay } from '../player/PlayerOverlay';
 import { PlaybackInfoPanel } from '../player/PlaybackInfoPanel';
 import { TrackSheet, SheetItem, SheetStepper } from '../player/TrackSheet';
+import { EpisodePanel, EpisodeCard } from '../player/EpisodePanel';
 import { SubtitleCue, cueTextAt, formatDuration } from '../player/SubtitleParser';
 import { loadSubtitle } from '../player/SubtitleLoader';
 import {
   VideoBox, computeVideoBox, ASPECT_MODES, aspectLabel, SPEEDS, speedLabel, nearestSpeed, pickByLanguage,
   resolveStartMs, nextInQueue, prevInQueue, clamp, swipeSeekRange, bitrateOptions, BitrateOption, nextCountdown,
-  decideFallback, FallbackStep, normCodec, mimeToCodec, CodecMime, InfoRow, TrackStat, DecoderStat, StatsInput,
-  buildInfoRows
+  decideFallback, decideLineFallback, FallbackStep, normCodec, mimeToCodec, CodecMime, InfoRow, TrackStat, DecoderStat, StatsInput,
+  buildInfoRows, HlsVariant, parseHlsVariants, variantLabel, pickVariant
 } from '../player/PlayerLogic';
+import { AppLog } from '../common/AppLog';
+import { request } from '../common/Http';
 
 const HIDE_DELAY_MS: number = 4000;
 const REPORT_INTERVAL_MS: number = 10000;
@@ -68,6 +71,13 @@ struct PlayerPage {
   @State subKey: string = 'off';
   @State qualityKey: string = '';
   @State private isFlicx: boolean = false;
+  /** Variants of the HLS master now playing (from its #EXT-X-STREAM-INF lines). */
+  @State private variants: HlsVariant[] = [];
+  /** Bitrates AVPlayer reported for the current stream. */
+  @State private bitrates: number[] = [];
+  /** Locked resolution (short side px); 0 = automatic. Kept across lines and episodes. */
+  @State private lockedHeight: number = 0;
+  private variantsFor: string = '';
   @State audioKey: string = '';
   @State gestureHint: string = '';
   @State scrubMs: number = -1;
@@ -75,6 +85,12 @@ struct PlayerPage {
   @State countdown: number = -1;
   @State showSkipIntro: boolean = false;
   @State episodes: MediaItem[] = [];
+  /** Episode panel: seasons of the series and the season it is browsing (may differ from the playing one). */
+  @State private epSeasons: MediaItem[] = [];
+  @State private epSeasonId: string = '';
+  @State private epCards: EpisodeCard[] = [];
+  @State private epPanelError: string = '';
+  private epLoadToken: number = 0;
   @State embeddedAudio: EmbeddedTrack[] = [];
   @State embeddedSubs: EmbeddedTrack[] = [];
   @State hasNext: boolean = false;
@@ -198,7 +214,7 @@ struct PlayerPage {
       this.settings = await Settings.load();
       await SourceStore.load();
     } catch (e) {
-      console.warn(`[Player] init load failed: ${(e as Error).message}`);
+      AppLog.warn(`[Player] init load failed: ${(e as Error).message}`);
     }
     this.speed = nearestSpeed(this.settings.defaultSpeed > 0 ? this.settings.defaultSpeed : 1);
     this.subScale = this.settings.subtitleScale > 0 ? this.settings.subtitleScale : 1;
@@ -220,11 +236,12 @@ struct PlayerPage {
     try {
       this.getUIContext().getPromptAction().showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.warn(`[Player] toast failed: ${msg}`);
+      AppLog.warn(`[Player] toast failed: ${msg}`);
     }
   }
 
   private fail(msg: string): void {
+    AppLog.error(`[Player] fail: ${msg}`);
     this.loading = false;
     this.buffering = false;
     this.errorMsg = msg;
@@ -382,7 +399,9 @@ struct PlayerPage {
     opt.preferredSubtitleLang = this.restoreSubLang.length > 0 ? this.restoreSubLang : this.settings.preferredSubtitleLang;
     opt.superResolution = this.settings.superResolution;
     opt.preferHdr = this.settings.preferHdr;
+    opt.preferredHeight = this.lockedHeight;
     const lower = url.toLowerCase();
+    AppLog.info(`[Player] open#${this.openCount + 1} line=${this.curQuality} start=${startMs}ms`);
     opt.isHls = this.isFlicx || lower.indexOf('.m3u8') >= 0 ||
       (this.info !== undefined && this.info.container.toLowerCase() === 'hls');
     this.loadingText = '正在缓冲…';
@@ -390,12 +409,131 @@ struct PlayerPage {
     this.openCount++;
     this.curUrl = url;
     this.firstFrame = false;
+    this.bitrates = [];
+    if (opt.isHls) {
+      this.loadVariants(url, headers);
+    } else {
+      this.variants = [];
+      this.variantsFor = '';
+    }
     this.armStall(STALL_OPEN_MS);
     if (!this.surfaceReady) {
       this.pendingOpen = opt;
       return;
     }
     this.ctl.open(opt);
+  }
+
+  // ---------- resolution ----------
+
+  /** Read the master playlist once per URL so the resolution menu can show 4K/1080p/... labels. */
+  private async loadVariants(url: string, headers: Record<string, string>): Promise<void> {
+    if (this.variantsFor === url) {
+      return;
+    }
+    this.variantsFor = url;
+    this.variants = [];
+    try {
+      const h: Record<string, string> = {};
+      Object.keys(headers).forEach((k: string) => { h[k] = headers[k]; });
+      h['Accept-Encoding'] = 'gzip';
+      const r = await request('GET', url, h, undefined, 8000);
+      if (this.variantsFor === url) {
+        this.variants = parseHlsVariants(r.body);
+        AppLog.info(`[Player] variants ${this.variants.map((v: HlsVariant) => variantLabel(v) + '@' + v.bandwidth).join(', ')}`);
+      }
+    } catch (e) {
+      AppLog.warn(`[Player] read master failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Bitrate to lock for the chosen height on this stream, 0 if unknown. */
+  private lockedBitrate(): number {
+    if (this.lockedHeight <= 0) {
+      return 0;
+    }
+    const v = pickVariant(this.variants, this.lockedHeight);
+    if (v !== undefined) {
+      return v.bandwidth;
+    }
+    return 0;
+  }
+
+  private onBitrates(list: number[]): void {
+    this.bitrates = list.slice().sort((a: number, b: number) => b - a);
+    const br = this.lockedBitrate();
+    if (br > 0) {
+      this.ctl.setBitrate(br);
+    }
+  }
+
+  private resolutionText(): string {
+    if (this.lockedHeight <= 0) {
+      return '自动';
+    }
+    const v = pickVariant(this.variants, this.lockedHeight);
+    return v !== undefined ? variantLabel(v) : this.lockedHeight + 'p';
+  }
+
+  private hasResolutions(): boolean {
+    return this.variants.length > 1 || this.bitrates.length > 1;
+  }
+
+  private resolutionItems(): SheetItem[] {
+    const out: SheetItem[] = [new SheetItem('res:auto', '自动', '按网速切换', this.lockedHeight <= 0)];
+    const cur = this.lockedHeight > 0 ? pickVariant(this.variants, this.lockedHeight) : undefined;
+    if (this.variants.length > 0) {
+      for (const v of this.variants) {
+        const sub = (v.width > 0 ? v.width + '×' + v.height + ' · ' : '') + (v.bandwidth / 1e6).toFixed(1) + ' Mbps';
+        out.push(new SheetItem('res:' + Math.min(v.width, v.height) + ':' + v.bandwidth, variantLabel(v), sub,
+          cur !== undefined && cur.bandwidth === v.bandwidth));
+      }
+      return out;
+    }
+    for (const b of this.bitrates) {
+      out.push(new SheetItem('resbr:' + b, (b / 1e6).toFixed(1) + ' Mbps', '', false));
+    }
+    return out;
+  }
+
+  private pickResolution(val: string): void {
+    const pos = this.currentPos();
+    if (val === 'auto') {
+      if (this.lockedHeight <= 0) {
+        return;
+      }
+      this.lockedHeight = 0;
+      // AVPlayer has no "back to adaptive" call; reopen the same stream without a lock.
+      this.showHint('已切换为自动画质');
+      this.captureSelection(false);
+      this.openUrl(this.curUrl, this.info !== undefined ? this.currentHeaders(this.info) : {}, pos);
+      this.reapplySubtitle();
+      return;
+    }
+    const parts = val.split(':');
+    const height = Number(parts[0]);
+    const bw = Number(parts.length > 1 ? parts[1] : '0');
+    this.lockedHeight = height > 0 ? height : 0;
+    const label = this.resolutionText();
+    if (bw > 0 && this.ctl.setBitrate(bw)) {
+      this.showHint('正在切换到 ' + label + '…');
+    } else {
+      this.showHint('已选择 ' + label + '，下次加载时生效');
+    }
+  }
+
+  /** Headers for the line now playing. */
+  private currentHeaders(info: PlaybackInfo): Record<string, string> {
+    const q = this.curQuality >= 0 && this.curQuality < info.qualities.length ? info.qualities[this.curQuality] : undefined;
+    return q !== undefined && Object.keys(q.headers).length > 0 ? q.headers : info.headers;
+  }
+
+  private reapplySubtitle(): void {
+    const info = this.info;
+    if (info !== undefined && this.restoreSubKey.length > 0) {
+      this.restoreSubtitle(info);
+      this.restoreSubKey = '';
+    }
   }
 
   // ---------- player callbacks ----------
@@ -444,6 +582,10 @@ struct PlayerPage {
     };
     cb.onError = (m: string) => this.onPlayerError(m);
     cb.onWarn = (m: string) => this.toast(m);
+    cb.onBitrates = (list: number[]) => this.onBitrates(list);
+    cb.onBitrateDone = (br: number) => {
+      this.showHint('已切换到 ' + this.resolutionText());
+    };
     cb.onTracks = (t: EmbeddedTrack[]) => this.onTracks(t);
     cb.onSubtitle = (text: string, startMs: number, durationMs: number) => {
       // AVPlayer-rendered text: embedded tracks and header-less external URLs
@@ -520,7 +662,7 @@ struct PlayerPage {
     const info = this.info;
     if (prov !== undefined && item !== undefined && info !== undefined) {
       prov.reportStart(item, info, this.ctl.positionMs).catch((e: Error) => {
-        console.warn(`[Player] reportStart failed: ${e.message}`);
+        AppLog.warn(`[Player] reportStart failed: ${e.message}`);
       });
     }
   }
@@ -531,6 +673,8 @@ struct PlayerPage {
       return;
     }
     this.fbHandledOpen = this.openCount;
+    // host + path start only: the rest of a Flicx URL is a short-lived signature
+    AppLog.error(`[Player] error open#${this.openCount} line=${this.curQuality} ${m} url=${this.curUrl.slice(0, 48)}`);
     clearTimeout(this.stallTimer);
     this.playing = false;
     this.stopSubtitleTicker();
@@ -562,7 +706,7 @@ struct PlayerPage {
     if (step.action === 'none') {
       return;
     }
-    console.warn(`[Player] no video frame after open, fallback ${step.key}`);
+    AppLog.warn(`[Player] no video frame after open, fallback ${step.key}`);
     this.fbHandledOpen = open;
     this.runFallback(step);
   }
@@ -594,8 +738,17 @@ struct PlayerPage {
 
   private nextFallback(): FallbackStep {
     const info = this.info;
-    if (info === undefined || this.item === undefined || this.isFlicx) {
+    if (info === undefined || this.item === undefined) {
       return new FallbackStep();
+    }
+    if (this.isFlicx) {
+      const lines: string[] = info.qualities.map((q: QualityOption, i: number) => this.flicxLineLabel(info, i));
+      const cur = this.playingQuality();
+      const triedLines: string[] = this.fbTried.slice();
+      if (cur >= 0 && triedLines.indexOf('q:' + cur) < 0) {
+        triedLines.push('q:' + cur);
+      }
+      return decideLineFallback(lines, cur, triedLines);
     }
     const labels: string[] = info.qualities.map((q: QualityOption) => q.label);
     // record the attempt that just failed so it is never retried automatically
@@ -612,7 +765,7 @@ struct PlayerPage {
     if (step.action === 'none') {
       return false;
     }
-    console.warn(`[Player] playback failed (${m}), fallback ${step.key}`);
+    AppLog.warn(`[Player] playback failed (${m}), fallback ${step.key}`);
     this.runFallback(step);
     return true;
   }
@@ -660,7 +813,7 @@ struct PlayerPage {
       (info.deliveryMode !== 'direct' || info.isTranscode) && info.playSessionId.length > 0) {
       // never reached first play, but the server may already be remuxing / transcoding for it
       prov.reportStopped(item, info, pos).catch((e: Error) => {
-        console.warn(`[Player] reportStopped (switch) failed: ${e.message}`);
+        AppLog.warn(`[Player] reportStopped (switch) failed: ${e.message}`);
       });
     }
   }
@@ -919,8 +1072,106 @@ struct PlayerPage {
       this.episodes = list;
       this.updateNeighbours();
     } catch (e) {
-      console.warn(`[Player] getEpisodes failed: ${(e as Error).message}`);
+      AppLog.warn(`[Player] getEpisodes failed: ${(e as Error).message}`);
     }
+  }
+
+  // ---------- episode panel ----------
+
+  private toCards(list: MediaItem[]): EpisodeCard[] {
+    const prov = this.provider;
+    return list.map((e: MediaItem) => {
+      const c = new EpisodeCard();
+      c.item = e;
+      if (prov !== undefined) {
+        try {
+          c.thumb = prov.imageUrl(e, 'thumb', 400);
+        } catch (err) {
+          c.thumb = '';
+        }
+      }
+      return c;
+    });
+  }
+
+  /** Show the playing season at once, then fetch the season list for the tabs. */
+  private async openEpisodePanel(): Promise<void> {
+    const item = this.item;
+    const prov = this.provider;
+    if (item === undefined || prov === undefined || item.type !== 'episode' || item.seriesId.length === 0) {
+      return;
+    }
+    const token = ++this.epLoadToken;
+    this.epPanelError = '';
+    if (this.epSeasonId !== item.seasonId || this.epCards.length === 0) {
+      this.epSeasonId = item.seasonId;
+      if (this.episodes.length > 0) {
+        this.epCards = this.toCards(this.episodes);
+      } else {
+        this.sheetLoading = true;
+        await this.loadEpisodes(item);
+        if (token !== this.epLoadToken) {
+          return;
+        }
+        this.epCards = this.toCards(this.episodes);
+        this.sheetLoading = false;
+      }
+    }
+    if (this.epSeasons.length === 0) {
+      try {
+        const ss = await prov.getSeasons(item.seriesId);
+        if (token === this.epLoadToken) {
+          this.epSeasons = ss;
+        }
+      } catch (e) {
+        AppLog.warn(`[Player] getSeasons failed: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  private async pickPanelSeason(seasonId: string): Promise<void> {
+    const item = this.item;
+    const prov = this.provider;
+    if (item === undefined || prov === undefined) {
+      return;
+    }
+    const token = ++this.epLoadToken;
+    this.epSeasonId = seasonId;
+    this.epPanelError = '';
+    if (seasonId === item.seasonId && this.episodes.length > 0) {
+      this.epCards = this.toCards(this.episodes);
+      return;
+    }
+    this.sheetLoading = true;
+    this.epCards = [];
+    try {
+      const list = await prov.getEpisodes(item.seriesId, seasonId);
+      if (token === this.epLoadToken) {
+        this.epCards = this.toCards(list);
+      }
+    } catch (e) {
+      if (token === this.epLoadToken) {
+        this.epPanelError = '加载失败：' + (e as Error).message;
+      }
+    } finally {
+      if (token === this.epLoadToken) {
+        this.sheetLoading = false;
+      }
+    }
+  }
+
+  private async pickPanelEpisode(id: string): Promise<void> {
+    if (this.item !== undefined && this.item.id === id) {
+      this.sheet = '';
+      return;
+    }
+    // switching season through the panel: play order follows that season from now on
+    const inPanel = this.epCards.map((c: EpisodeCard) => c.item.id);
+    if (this.epSeasonId !== (this.item !== undefined ? this.item.seasonId : '') && inPanel.indexOf(id) >= 0) {
+      this.episodes = this.epCards.map((c: EpisodeCard) => c.item);
+      this.params.queue = [];
+    }
+    await this.switchTo(id);
   }
 
   private nextId(): string {
@@ -1000,7 +1251,7 @@ struct PlayerPage {
       return;
     }
     prov.reportProgress(item, info, this.ctl.positionMs, paused).catch((e: Error) => {
-      console.warn(`[Player] reportProgress failed: ${e.message}`);
+      AppLog.warn(`[Player] reportProgress failed: ${e.message}`);
     });
   }
 
@@ -1018,7 +1269,7 @@ struct PlayerPage {
     }
     item.state.positionMs = pos;
     prov.reportStopped(item, info, pos).catch((e: Error) => {
-      console.warn(`[Player] reportStopped failed: ${e.message}`);
+      AppLog.warn(`[Player] reportStopped failed: ${e.message}`);
     });
   }
 
@@ -1159,7 +1410,7 @@ struct PlayerPage {
         this.restoreWindow();
       }
     } catch (e) {
-      console.warn(`[Player] window setup failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] window setup failed: ${(e as BusinessError).message}`);
     }
   }
 
@@ -1167,23 +1418,23 @@ struct PlayerPage {
     try {
       await w.setPreferredOrientation(window.Orientation.AUTO_ROTATION_LANDSCAPE);
     } catch (e) {
-      console.warn(`[Player] orientation failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] orientation failed: ${(e as BusinessError).message}`);
     }
     try {
       w.setImmersiveModeEnabledState(true);
     } catch (e) {
-      console.warn(`[Player] immersive failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] immersive failed: ${(e as BusinessError).message}`);
     }
     try {
       await w.setSpecificSystemBarEnabled('status', false);
       await w.setSpecificSystemBarEnabled('navigationIndicator', false);
     } catch (e) {
-      console.warn(`[Player] system bar hide failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] system bar hide failed: ${(e as BusinessError).message}`);
     }
     try {
       await w.setWindowKeepScreenOn(true);
     } catch (e) {
-      console.warn(`[Player] keepScreenOn failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] keepScreenOn failed: ${(e as BusinessError).message}`);
     }
   }
 
@@ -1193,12 +1444,12 @@ struct PlayerPage {
       return;
     }
     w.setPreferredOrientation(this.prevOrientation).catch((e: BusinessError) => {
-      console.warn(`[Player] restore orientation failed: ${e.message}`);
+      AppLog.warn(`[Player] restore orientation failed: ${e.message}`);
     });
     try {
       w.setImmersiveModeEnabledState(false);
     } catch (e) {
-      console.warn('[Player] restore immersive failed');
+      AppLog.warn('[Player] restore immersive failed');
     }
     w.setSpecificSystemBarEnabled('status', true).catch((e: BusinessError) => {});
     w.setSpecificSystemBarEnabled('navigationIndicator', true).catch((e: BusinessError) => {});
@@ -1215,7 +1466,7 @@ struct PlayerPage {
       this.minVolume = vm.getMinVolumeByStream(audio.StreamUsage.STREAM_USAGE_MOVIE);
       this.volumeLevel = vm.getVolumeByStream(audio.StreamUsage.STREAM_USAGE_MOVIE);
     } catch (e) {
-      console.warn(`[Player] volume query failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] volume query failed: ${(e as BusinessError).message}`);
       this.maxVolume = 15;
       this.minVolume = 0;
     }
@@ -1335,11 +1586,8 @@ struct PlayerPage {
     this.sheet = key;
     this.showControls = false;
     clearTimeout(this.hideTimer);
-    if (key === 'episodes' && this.episodes.length === 0 && this.item !== undefined) {
-      this.sheetLoading = true;
-      this.loadEpisodes(this.item).finally(() => {
-        this.sheetLoading = false;
-      });
+    if (key === 'episodes') {
+      this.openEpisodePanel();
     }
   }
 
@@ -1365,7 +1613,7 @@ struct PlayerPage {
     try {
       CodecCaps.entries().forEach((e: CodecEntry) => list.push(new CodecMime(e.codec, e.mime)));
     } catch (err) {
-      console.warn(`[Player] CodecCaps.load failed: ${(err as Error).message}`);
+      AppLog.warn(`[Player] CodecCaps.load failed: ${(err as Error).message}`);
     }
     if (list.length > 0) {
       this.codecMimes = list;
@@ -1387,7 +1635,7 @@ struct PlayerPage {
         d.name = dec.name;
       }
     } catch (err) {
-      console.warn(`[Player] CodecCaps.decoderFor failed: ${(err as Error).message}`);
+      AppLog.warn(`[Player] CodecCaps.decoderFor failed: ${(err as Error).message}`);
     }
     return d;
   }
@@ -1493,6 +1741,7 @@ struct PlayerPage {
     switch (this.sheet) {
       case 'speed': return '播放速度';
       case 'quality': return this.isFlicx ? '播放线路' : '画质';
+      case 'resolution': return '分辨率';
       case 'audio': return '音轨';
       case 'subtitle': return '字幕';
       case 'aspect': return '画面比例';
@@ -1630,6 +1879,7 @@ struct PlayerPage {
       case 'speed':
         return SPEEDS.map((s: number) => new SheetItem('sp:' + s, speedLabel(s), '', s === this.speed));
       case 'quality': return this.qualityItems();
+      case 'resolution': return this.resolutionItems();
       case 'audio': return this.audioItems();
       case 'subtitle': return this.subtitleItems();
       case 'aspect':
@@ -1663,6 +1913,13 @@ struct PlayerPage {
     } else if (sheet === 'episodes' && kind === 'ep') {
       if (this.item === undefined || this.item.id !== val) {
         await this.switchTo(val);
+      }
+    } else if (sheet === 'resolution' && kind === 'res') {
+      this.pickResolution(val);
+    } else if (sheet === 'resolution' && kind === 'resbr') {
+      // master playlist unreadable: only raw bitrates are known, lock this one for the current stream
+      if (this.ctl.setBitrate(Number(val))) {
+        this.showHint('正在切换到 ' + (Number(val) / 1e6).toFixed(1) + ' Mbps…');
       }
     } else if (sheet === 'quality') {
       await this.pickQuality(kind, val);
@@ -1794,7 +2051,7 @@ struct PlayerPage {
       s.subtitleScale = this.subScale;
       this.settings = s;
       Settings.save(s).catch((e: Error) => {
-        console.warn(`[Player] save subtitleScale failed: ${e.message}`);
+        AppLog.warn(`[Player] save subtitleScale failed: ${e.message}`);
       });
     }
   }
@@ -1834,7 +2091,7 @@ struct PlayerPage {
     }
     try {
       AppContext.get().openLink(url, { appLinkingOnly: false }).catch((e: BusinessError) => {
-        console.error(`[Player] openLink: ${e.code} ${e.message}`);
+        AppLog.error(`[Player] openLink: ${e.code} ${e.message}`);
         this.showHint('无法打开浏览器');
       });
     } catch (e) {
@@ -1874,6 +2131,10 @@ struct PlayerPage {
             .fontColor(Color.White)
             .onClick(() => this.openFlicxPage())
         }
+        Button('查看日志')
+          .backgroundColor(Theme.surface2)
+          .fontColor(Color.White)
+          .onClick(() => Nav.logs())
         Button('返回')
           .backgroundColor(Theme.surface2)
           .fontColor(Color.White)
@@ -1951,6 +2212,7 @@ struct PlayerPage {
         showControls: this.showControls && this.errorMsg.length === 0,
         speedText: this.speed === 1 ? '倍速' : speedLabel(this.speed),
         qualityText: this.isFlicx ? '线路' : (this.req.maxBitrate > 0 ? '转码' : '画质'),
+        resolutionText: this.hasResolutions() ? this.resolutionText() : '',
         aspectText: aspectLabel(this.aspect),
         hasEpisodes: this.item !== undefined && this.item.type === 'episode',
         hasNext: this.hasNext,
@@ -2122,8 +2384,26 @@ struct PlayerPage {
         this.errorView()
       }
 
+      if (this.sheet === 'episodes') {
+        EpisodePanel({
+          seriesTitle: this.title,
+          seasons: this.epSeasons,
+          seasonId: this.epSeasonId,
+          cards: this.epCards,
+          currentId: this.item !== undefined ? this.item.id : '',
+          loading: this.sheetLoading,
+          error: this.epPanelError,
+          panelWidth: this.areaW > 0 ? Math.min(480, Math.max(300, Math.round(this.areaW * 0.46))) : 440,
+          onPickSeason: (sid: string) => { this.pickPanelSeason(sid); },
+          onPickEpisode: (eid: string) => { this.pickPanelEpisode(eid); },
+          onClose: () => {
+            this.sheet = '';
+          }
+        })
+      }
+
       // side sheet
-      if (this.sheet.length > 0) {
+      if (this.sheet.length > 0 && this.sheet !== 'episodes') {
         TrackSheet({
           title: this.sheetTitle(),
           items: this.sheetItems(),

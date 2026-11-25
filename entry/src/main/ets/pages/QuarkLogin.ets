@@ -12,6 +12,7 @@ import { CookieUtil } from '../quark/CookieUtil';
 import { QuarkTvApi, QuarkTvTokens } from '../quark/QuarkTvApi';
 import { QuarkTvConst } from '../quark/QuarkTvSign';
 import { QuarkTvQr } from '../quark/QuarkTypes';
+import { AppLog } from '../common/AppLog';
 
 /** Any error carrying an HTTP-like status (QuarkError). */
 interface HttpLikeError {
@@ -101,7 +102,7 @@ struct QuarkLoginPage {
     try {
       webview.WebCookieManager.clearAllCookiesSync();
     } catch (e) {
-      console.warn('[QuarkLogin] clear cookies: ' + (e as BusinessError).message);
+      AppLog.warn('[QuarkLogin] clear cookies: ' + (e as BusinessError).message);
     }
   }
 
@@ -216,7 +217,7 @@ struct QuarkLoginPage {
       try {
         nick = await api.userInfo();
       } catch (e) {
-        console.warn('[QuarkLogin] user_info: ' + (e as Error).message);
+        AppLog.warn('[QuarkLogin] user_info: ' + (e as Error).message);
       }
       let cfg: SourceConfig | undefined = this.sourceId ? SourceStore.get(this.sourceId) : undefined;
       if (cfg === undefined) {
@@ -266,7 +267,7 @@ struct QuarkLoginPage {
     try {
       promptAction.showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.error('[QuarkLogin] toast: ' + (e as BusinessError).message);
+      AppLog.error('[QuarkLogin] toast: ' + (e as BusinessError).message);
     }
   }
 
@@ -334,7 +335,7 @@ struct QuarkLoginPage {
       try {
         await api.config(); // obtains / rolls __puus for the drive api
       } catch (e) {
-        console.warn('[QuarkLogin] config: ' + (e as Error).message);
+        AppLog.warn('[QuarkLogin] config: ' + (e as Error).message);
       }
       let cfg: SourceConfig | undefined = this.sourceId ? SourceStore.get(this.sourceId) : undefined;
       if (cfg === undefined) {
@@ -426,7 +427,7 @@ struct QuarkLoginPage {
             try {
               this.controller.setCustomUserAgent(QuarkConst.WEB_UA);
             } catch (e) {
-              console.warn('[QuarkLogin] UA: ' + (e as BusinessError).message);
+              AppLog.warn('[QuarkLogin] UA: ' + (e as BusinessError).message);
             }
             this.startPoll();
           })

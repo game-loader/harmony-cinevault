@@ -3,6 +3,9 @@ import { QualityOption, SubtitleTrack } from '../common/Models';
 import { FlicxSearchResponse, FlicxSourceResponse, FlicxSubtitleResponse, FlicxTitleItem,
   FlicxLibraryResponse, FlicxSeasonRow, FlicxEpisodesResponse, FlicxEpisode } from './FlicxModels';
 import { FlicxMapper, FLICX_ID, FLICX_ORIGIN } from './FlicxMapper';
+import { HomeRow } from '../common/Models';
+import { AppLog } from '../common/AppLog';
+import { FlicxHome, FlicxTitlePage, parseTitlePage } from './FlicxHome';
 
 export class FlicxApi {
   private static async read<T>(path: string): Promise<T | undefined> {
@@ -15,6 +18,7 @@ export class FlicxApi {
       if (err.status === 404) {
         return undefined;
       }
+      AppLog.warn(`[Flicx] GET ${path} failed: HTTP ${err.status} ${err.message ?? ''}`);
       throw new Error(err.status > 0 ? 'Flicx 请求失败 (HTTP ' + err.status + ')' : '无法连接 Flicx，请检查网络后重试');
     }
     try {
@@ -36,6 +40,35 @@ export class FlicxApi {
       throw new Error('缺少有效的季号或集号');
     }
     return subs ? base + '/' + season + '/' + episode : base + '?s=' + season + '&e=' + episode;
+  }
+
+  /** Rails from the server-rendered home page (no JSON endpoint exists for it). */
+  static async home(): Promise<HomeRow[]> {
+    let body: string;
+    try {
+      body = (await request('GET', FLICX_ORIGIN + '/', { 'Accept': 'text/html' }, undefined, 10000)).body;
+    } catch (e) {
+      const err = e as HttpError;
+      throw new Error(err.status > 0 ? 'Flicx 首页加载失败 (HTTP ' + err.status + ')' : '无法连接 Flicx，请检查网络后重试');
+    }
+    const rows = FlicxHome.parse(body);
+    if (rows.length === 0) {
+      throw new Error('无法识别 Flicx 首页内容，可直接使用搜索');
+    }
+    return rows;
+  }
+
+  /** Synopsis/credits from the title's web page; undefined when the page has no recognisable metadata. */
+  static async titlePage(kind: 'movie' | 'tv', slug: string): Promise<FlicxTitlePage | undefined> {
+    if (!/^[a-z0-9][a-z0-9-]{0,200}$/.test(slug)) {
+      return undefined;
+    }
+    try {
+      const r = await request('GET', FLICX_ORIGIN + '/' + kind + '/' + slug, { 'Accept': 'text/html' }, undefined, 8000);
+      return parseTitlePage(r.body);
+    } catch (e) {
+      return undefined;
+    }
   }
 
   static async search(term: string): Promise<FlicxTitleItem[]> {

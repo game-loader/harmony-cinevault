@@ -50,6 +50,8 @@ export type FlicxKind = 'movie' | 'tv';
 
 export class FlicxTitleItem extends MediaItem {
   slug: string = '';
+  /** Title page metadata (synopsis, credits) already merged in. */
+  pageLoaded: boolean = false;
 }
 
 export interface FlicxSeasonRow {

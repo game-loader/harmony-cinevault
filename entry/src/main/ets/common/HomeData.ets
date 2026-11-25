@@ -4,6 +4,7 @@ import { MediaProvider } from './MediaProvider';
 import { ProviderRegistry } from '../providers/ProviderRegistry';
 import { Settings } from './Settings';
 import { SourceStore } from './SourceStore';
+import { FlicxProvider } from '../flicx/FlicxProvider';
 import { settleAll, Settled, dedupe, sortByLastPlayed, roundRobin, pickFeatured, shuffle } from '../components/MediaLogic';
 
 export class SourceWarning {
@@ -29,6 +30,8 @@ class SourceHome {
   latest: HomeRow[] = [];
   random: MediaItem[] = [];
   favorites: MediaItem[] = [];
+  /** Rails a source supplies itself (Flicx home page). */
+  rails: HomeRow[] = [];
   errors: string[] = [];
 }
 
@@ -38,6 +41,8 @@ export class HomeData {
   private static cache: HomeResult | undefined = undefined;
   private static inflight: Promise<HomeResult> | undefined = undefined;
   private static version: number = 0;
+  /** Set by invalidate() so the next load also refetches remote rails (pull to refresh). */
+  private static refetch: boolean = false;
 
   /** Last result in memory, if any. */
   static cached(): HomeResult | undefined {
@@ -48,6 +53,7 @@ export class HomeData {
   static invalidate(): void {
     HomeData.cache = undefined;
     HomeData.version++;
+    HomeData.refetch = true;
   }
 
   /** Providers shown on the home screen. */
@@ -72,7 +78,9 @@ export class HomeData {
       return HomeData.inflight;
     }
     const v = HomeData.version;
-    const p = HomeData.doLoad().then((r: HomeResult) => {
+    const refetch = HomeData.refetch;
+    HomeData.refetch = false;
+    const p = HomeData.doLoad(refetch).then((r: HomeResult) => {
       if (v === HomeData.version) {
         HomeData.cache = r;
       }
@@ -96,10 +104,24 @@ export class HomeData {
     }
   }
 
-  private static async loadSource(p: MediaProvider): Promise<SourceHome> {
+  private static async loadSource(p: MediaProvider, refetch: boolean): Promise<SourceHome> {
     const out = new SourceHome();
     out.sourceId = p.config.id;
     const errs = out.errors;
+    if (p instanceof FlicxProvider) {
+      // Site rails plus what this device saved for Flicx (continue watching, favourites).
+      const fp = p as FlicxProvider;
+      const fq = new QueryOptions();
+      fq.favoritesOnly = true;
+      fq.limit = ROW_LIMIT * 2;
+      const railsP = HomeData.safe<HomeRow[]>(fp.home(refetch), [], errs, '首页');
+      const resumeP = HomeData.safe<MediaItem[]>(fp.getResume(ROW_LIMIT), [], errs, '继续观看');
+      const favP = HomeData.safe<PagedItems>(fp.getItems(fq), new PagedItems(), errs, '收藏');
+      out.resume = await resumeP;
+      out.favorites = (await favP).items;
+      out.rails = await railsP;
+      return out;
+    }
     const empty: MediaItem[] = [];
     const resumeP = HomeData.safe<MediaItem[]>(p.getResume(ROW_LIMIT), empty, errs, '继续观看');
     const nextP = HomeData.safe<MediaItem[]>(p.getNextUp(ROW_LIMIT), empty, errs, '下一集');
@@ -141,14 +163,14 @@ export class HomeData {
     return out;
   }
 
-  private static async doLoad(): Promise<HomeResult> {
+  private static async doLoad(refetch: boolean): Promise<HomeResult> {
     await SourceStore.load();
     await Settings.load();
     const provs = HomeData.providers();
     const res = new HomeResult();
     res.sourceCount = provs.length;
     const settled: Settled<SourceHome>[] = await settleAll<SourceHome>(
-      provs.map((p: MediaProvider) => HomeData.loadSource(p)));
+      provs.map((p: MediaProvider) => HomeData.loadSource(p, refetch)));
     const homes: SourceHome[] = [];
     for (let i = 0; i < settled.length; i++) {
       const s = settled[i];
@@ -180,17 +202,24 @@ export class HomeData {
 
     HomeData.addRow(res, 'resume', '继续观看', 'landscape', resume);
     HomeData.addRow(res, 'nextup', '下一集', 'landscape', nextFiltered);
+    HomeData.addRow(res, 'favorites', '我的收藏', 'poster', favs);
     homes.forEach((h: SourceHome) => {
       h.latest.forEach((r: HomeRow) => { res.rows.push(r); });
       h.views.forEach((v: LibraryView) => { res.views.push(v); });
     });
+    homes.forEach((h: SourceHome) => {
+      h.rails.forEach((r: HomeRow) => { res.rows.push(r); });
+    });
     HomeData.addRow(res, 'random', '推荐 · 随机', 'poster', random);
-    HomeData.addRow(res, 'favorites', '收藏', 'poster', favs);
 
     const pool: MediaItem[] = [];
     random.forEach((it: MediaItem) => { pool.push(it); });
     homes.forEach((h: SourceHome) => {
       h.latest.forEach((r: HomeRow) => { r.items.forEach((it: MediaItem) => { pool.push(it); }); });
+      // only the first rail (trending) so a personal library still dominates the banner
+      if (h.rails.length > 0) {
+        h.rails[0].items.forEach((it: MediaItem) => { pool.push(it); });
+      }
     });
     res.featured = pickFeatured(pool, 8, Date.now());
     if (res.featured.length === 0) {

@@ -2,6 +2,7 @@ import { media } from '@kit.MediaKit';
 import { audio } from '@kit.AudioKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { wantSuperResolution, srWindowSize, VideoBox } from './PlayerLogic';
+import { AppLog } from '../common/AppLog';
 
 /** Track reported by AVPlayer.getTrackDescription (embedded in the container). */
 export class EmbeddedTrack {
@@ -52,6 +53,10 @@ export class PlayerCallbacks {
   onSuperRes: (status: string) => void = (s: string) => {};
   /** Non-fatal problem worth a toast (does not trigger the fallback chain). */
   onWarn: (message: string) => void = (m: string) => {};
+  /** HLS/DASH bitrates the player can switch between (bps). */
+  onBitrates: (bitrates: number[]) => void = (b: number[]) => {};
+  /** A setBitrate() request took effect. */
+  onBitrateDone: (bitrate: number) => void = (b: number) => {};
 }
 
 export class OpenOptions {
@@ -63,6 +68,8 @@ export class OpenOptions {
   preferredAudioLang: string = '';
   preferredSubtitleLang: string = '';
   isHls: boolean = false;
+  /** Start HLS/DASH at the variant nearest this height (0 = let the player choose). */
+  preferredHeight: number = 0;
   /** PlaybackStrategy.enableSuperResolution; actually switched on only for sub-1080p sources */
   superResolution: boolean = false;
   preferHdr: boolean = false;
@@ -214,7 +221,9 @@ export class PlayerController {
       // setMediaSource for every network URL so the PlaybackStrategy (super resolution, HDR, first frame) applies
       if (/^https?:\/\//i.test(opt.url) || Object.keys(opt.headers).length > 0 || opt.isHls) {
         const src = media.createMediaSourceWithUrl(opt.url, opt.headers);
-        if (opt.isHls) {
+        // AVMimeTypes.APPLICATION_M3U8 is documented for a *local* M3U8 file (fd path) only; network HLS is
+        // detected from the URL/response, and tagging an https playlist with it breaks playback.
+        if (opt.isHls && !/^https?:\/\//i.test(opt.url)) {
           src.setMimeType(media.AVMimeTypes.APPLICATION_M3U8);
         }
         const strategy: media.PlaybackStrategy = {
@@ -226,12 +235,16 @@ export class PlayerController {
         if (this.srRequested) {
           strategy.enableSuperResolution = true;
         }
+        if (opt.preferredHeight > 0) {
+          strategy.preferredHeight = opt.preferredHeight;
+        }
         if (opt.preferredAudioLang.length > 0) {
           strategy.preferredAudioLanguage = opt.preferredAudioLang;
         }
         if (opt.preferredSubtitleLang.length > 0) {
           strategy.preferredSubtitleLanguage = opt.preferredSubtitleLang;
         }
+        AppLog.info(`[Player] setMediaSource hls=${opt.isHls} headers=${Object.keys(opt.headers).join(',')} ${opt.url}`);
         await p.setMediaSource(src, strategy);
       } else {
         p.url = opt.url;
@@ -249,15 +262,21 @@ export class PlayerController {
         return;
       }
       this.state = state;
+      AppLog.info(`[Player] state ${state} (reason ${reason})`);
       this.cb.onState(state);
       try {
         if (state === 'initialized') {
           if (this.surfaceId.length > 0) {
             p.surfaceId = this.surfaceId;
           }
-          p.audioInterruptMode = audio.InterruptMode.SHARE_MODE;
           await p.prepare();
         } else if (state === 'prepared') {
+          // Only settable in prepared/playing/paused/completed; setting it in 'initialized' throws 5400102.
+          try {
+            p.audioInterruptMode = audio.InterruptMode.SHARE_MODE;
+          } catch (e) {
+            AppLog.warn(`[Player] audioInterruptMode: ${(e as BusinessError).code} ${(e as BusinessError).message}`);
+          }
           this.durationMs = p.duration > 0 ? p.duration : this.durationMs;
           this.cb.onDuration(this.durationMs);
           this.loadTracks();
@@ -279,13 +298,16 @@ export class PlayerController {
           }
         }
       } catch (e) {
-        this.cb.onError(errorText(e as BusinessError));
+        const err = e as BusinessError;
+        AppLog.error(`[Player] in state ${state}: ${err.code} ${err.message}`);
+        this.cb.onError(errorText(err));
       }
     });
     p.on('error', (err: BusinessError) => {
       if (myGen !== this.gen) {
         return;
       }
+      AppLog.error(`[Player] AVPlayer error ${err.code} ${err.message} (state ${this.state})`);
       this.cb.onError(errorText(err));
     });
     p.on('timeUpdate', (ms: number) => {
@@ -315,6 +337,20 @@ export class PlayerController {
       } else if (infoType === media.BufferingInfoType.CACHED_DURATION) {
         this.cb.onCachedMs(value);
       }
+    });
+    p.on('availableBitrates', (list: number[]) => {
+      if (myGen !== this.gen) {
+        return;
+      }
+      AppLog.info(`[Player] availableBitrates ${list.join(',')}`);
+      this.cb.onBitrates(list.slice());
+    });
+    p.on('bitrateDone', (bitrate: number) => {
+      if (myGen !== this.gen) {
+        return;
+      }
+      AppLog.info(`[Player] bitrateDone ${bitrate}`);
+      this.cb.onBitrateDone(bitrate);
     });
     p.on('videoSizeChange', (w: number, h: number) => {
       if (myGen === this.gen) {
@@ -402,7 +438,7 @@ export class PlayerController {
   }
 
   private srFailed(e: BusinessError): void {
-    console.warn(`[Player] super resolution failed: ${e.code} ${e.message}`);
+    AppLog.warn(`[Player] super resolution failed: ${e.code} ${e.message}`);
     if (e.code === 5410003) {
       PlayerController.srUnsupported = true;
     }
@@ -484,7 +520,7 @@ export class PlayerController {
       out.downloading = num(info[media.PlaybackInfoKey.IS_DOWNLOADING]);
       out.serverIp = str(info[media.PlaybackInfoKey.SERVER_IP_ADDRESS]);
     } catch (e) {
-      console.warn(`[Player] getPlaybackInfo failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] getPlaybackInfo failed: ${(e as BusinessError).message}`);
     }
     return out;
   }
@@ -514,7 +550,7 @@ export class PlayerController {
         this.cb.onTracks(PlayerController.mapTracks(list));
       }
     } catch (e) {
-      console.warn(`[Player] getTrackDescription failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] getTrackDescription failed: ${(e as BusinessError).message}`);
     }
   }
 
@@ -554,7 +590,7 @@ export class PlayerController {
     try {
       await p.pause();
     } catch (e) {
-      console.warn(`[Player] pause failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] pause failed: ${(e as BusinessError).message}`);
     }
   }
 
@@ -581,7 +617,7 @@ export class PlayerController {
       try {
         p.seek(target, media.SeekMode.SEEK_PREV_SYNC);
       } catch (e2) {
-        console.warn(`[Player] seek failed: ${(e2 as BusinessError).message}`);
+        AppLog.warn(`[Player] seek failed: ${(e2 as BusinessError).message}`);
       }
     }
   }
@@ -595,7 +631,24 @@ export class PlayerController {
     try {
       p.setSpeed(speedEnum(s));
     } catch (e) {
-      console.warn(`[Player] setSpeed failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] setSpeed failed: ${(e as BusinessError).message}`);
+    }
+  }
+
+  /** Lock an HLS/DASH stream to the variant nearest this bitrate; false when the player can't take it now. */
+  setBitrate(bitrate: number): boolean {
+    const p = this.player;
+    if (p === undefined || !this.canControl() || bitrate <= 0) {
+      return false;
+    }
+    try {
+      p.setBitrate(bitrate);
+      AppLog.info(`[Player] setBitrate ${bitrate}`);
+      return true;
+    } catch (e) {
+      const err = e as BusinessError;
+      AppLog.warn(`[Player] setBitrate ${bitrate} failed: ${err.code} ${err.message}`);
+      return false;
     }
   }
 
@@ -619,7 +672,7 @@ export class PlayerController {
     try {
       await p.deselectTrack(index);
     } catch (e) {
-      console.warn(`[Player] deselectTrack failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] deselectTrack failed: ${(e as BusinessError).message}`);
     }
   }
 
@@ -633,7 +686,7 @@ export class PlayerController {
       await p.addSubtitleFromUrl(url);
       return true;
     } catch (e) {
-      console.warn(`[Player] addSubtitleFromUrl failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] addSubtitleFromUrl failed: ${(e as BusinessError).message}`);
       return false;
     }
   }
@@ -651,6 +704,8 @@ export class PlayerController {
       p.off('timeUpdate');
       p.off('durationUpdate');
       p.off('bufferingUpdate');
+      p.off('availableBitrates');
+      p.off('bitrateDone');
       p.off('videoSizeChange');
       p.off('seekDone');
       p.off('trackInfoUpdate');
@@ -660,7 +715,7 @@ export class PlayerController {
       p.off('superResolutionChanged');
       await p.release();
     } catch (e) {
-      console.warn(`[Player] release failed: ${(e as BusinessError).message}`);
+      AppLog.warn(`[Player] release failed: ${(e as BusinessError).message}`);
     }
   }
 

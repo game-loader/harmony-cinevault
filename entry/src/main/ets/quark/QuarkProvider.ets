@@ -10,6 +10,7 @@ import { QuarkApi } from './QuarkApi';
 import { QuarkTvApi } from './QuarkTvApi';
 import { QuarkFile, QuarkQuality, QuarkLink, QuarkDrive } from './QuarkTypes';
 import { isVideoName, isSubtitleName, isSkippedFolder, subtitleMatches, subtitleLang, fileExt, baseName } from './CookieUtil';
+import { AppLog } from '../common/AppLog';
 
 export const VIEW_MOVIES: string = 'quark-movies';
 export const VIEW_TV: string = 'quark-tvshows';
@@ -103,7 +104,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
     }
     cfg.quarkRefreshToken = rt;
     SourceStore.upsert(cfg).catch((e: Error) => {
-      console.warn('[quark] persist refresh token failed: ' + e.message);
+      AppLog.warn('[quark] persist refresh token failed: ' + e.message);
     });
   }
 
@@ -126,7 +127,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
       }
       cfg.cookie = cookie;
       SourceStore.upsert(cfg).catch((e: Error) => {
-        console.warn('[quark] persist cookie failed: ' + e.message);
+        AppLog.warn('[quark] persist cookie failed: ' + e.message);
       });
     }, 1500);
   }
@@ -189,7 +190,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
         v.image = it.images.backdrop || it.images.poster || it.images.thumb;
       }
     } catch (e) {
-      console.warn('[quark] view query failed: ' + (e as Error).message);
+      AppLog.warn('[quark] view query failed: ' + (e as Error).message);
     }
     if (!always && total === 0) {
       return v;
@@ -360,7 +361,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
     try {
       files = await LibraryDb.filesForItem(this.config.id, item.id);
     } catch (e) {
-      console.warn('[quark] filesForItem failed: ' + (e as Error).message);
+      AppLog.warn('[quark] filesForItem failed: ' + (e as Error).message);
     }
     const vids = files.filter((f: LocalFile) => isVideoName(f.name) || !isSubtitleName(f.name));
     if (vids.length > 0) {
@@ -409,7 +410,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
     tasks.push(api.playQualities(file.fid).then((q: QuarkQuality[]) => {
       transcodes = q;
     }).catch((e: Error) => {
-      console.info('[quark] no transcodes: ' + e.message);
+      AppLog.info('[quark] no transcodes: ' + e.message);
     }));
     await Promise.all(tasks);
 
@@ -458,7 +459,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
       try {
         info.subtitles = await this.findSubtitles(file);
       } catch (e) {
-        console.warn('[quark] subtitle lookup failed: ' + (e as Error).message);
+        AppLog.warn('[quark] subtitle lookup failed: ' + (e as Error).message);
       }
     }
     return info;
@@ -740,7 +741,7 @@ export class QuarkProvider implements MediaProvider, FileLister {
           await QuarkApi.sleep(150);
         } catch (e) {
           const err = e as Error;
-          console.warn('[quark] list ' + t.path + ' failed: ' + err.message);
+          AppLog.warn('[quark] list ' + t.path + ' failed: ' + err.message);
           if (firstError === undefined) {
             firstError = err;
           }

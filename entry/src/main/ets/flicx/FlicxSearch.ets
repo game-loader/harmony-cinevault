@@ -8,7 +8,7 @@ import { FlicxId, FlicxSeasonRow, FlicxTitleItem } from './FlicxModels';
 
 const CANDIDATE_LIMIT: number = 12;
 const CONCURRENCY: number = 3;
-const CACHE_LIMIT: number = 256;
+const CACHE_LIMIT: number = 512;
 
 function remember<T>(map: Map<string, T>, key: string, value: T): void {
   if (map.size >= CACHE_LIMIT && !map.has(key)) {
@@ -34,6 +34,15 @@ export class FlicxSearch {
   private tmdbIds: Map<string, string> = new Map<string, string>();
   private availability: Map<string, Availability> = new Map<string, Availability>();
   private revision: number = 0;
+
+  /** Titles shown outside search (home rails) so details work without a TMDB key. */
+  rememberSite(items: MediaItem[]): void {
+    for (const item of items) {
+      if (item instanceof FlicxTitleItem) {
+        remember(this.siteTitles, item.id, item);
+      }
+    }
+  }
 
   siteTitle(rootId: string): FlicxTitleItem | undefined {
     return this.siteTitles.get(rootId);

@@ -60,19 +60,21 @@ export struct PersonAvatar {
   @Prop avatarSize: number = 72;
 
   build() {
-    Column({ space: 4 }) {
+    Column({ space: 6 }) {
       Stack() {
         Text(this.person.name.substring(0, 1))
-          .fontSize(this.avatarSize * 0.36).fontColor(Theme.text2)
+          .fontSize(this.avatarSize * 0.36).fontColor(Theme.text2).fontWeight(FontWeight.Medium)
         if (this.person.image.length > 0) {
           Image(this.person.image)
             .width('100%').height('100%')
             .objectFit(ImageFit.Cover)
+            .transition(TransitionEffect.OPACITY.animation({ duration: 200 }))
         }
       }
       .width(this.avatarSize).height(this.avatarSize)
       .borderRadius(this.avatarSize / 2).clip(true)
       .backgroundColor(Theme.surface2)
+      .border({ width: 1, color: '#26FFFFFF', radius: this.avatarSize / 2 })
 
       Text(this.person.name)
         .fontSize(12).fontColor(Theme.text)
@@ -103,11 +105,16 @@ export struct EpisodeRow {
           Image(this.thumbUrl)
             .width('100%').height('100%')
             .objectFit(ImageFit.Cover)
-        } else {
-          Column() {
-            Text('▶').fontSize(20).fontColor(Theme.text3)
-          }.width('100%').height('100%').justifyContent(FlexAlign.Center)
         }
+        Column() {
+          Row() {
+            SymbolGlyph($r('sys.symbol.play_fill')).fontSize(this.wide ? 18 : 15).fontColor([Color.White])
+          }
+          .width(this.wide ? 40 : 32).height(this.wide ? 40 : 32).borderRadius(this.wide ? 20 : 16)
+          .justifyContent(FlexAlign.Center)
+          .backgroundColor('#80000000')
+          .border({ width: 1.5, color: '#CCFFFFFF', radius: this.wide ? 20 : 16 })
+        }.width('100%').height('100%').justifyContent(FlexAlign.Center)
         if (progressFraction(this.ep) > 0 && !this.ep.state.played) {
           Progress({ value: progressFraction(this.ep) * 100, total: 100, type: ProgressType.Linear })
             .color(Theme.accent).backgroundColor('#66000000')
@@ -115,10 +122,7 @@ export struct EpisodeRow {
         }
         if (this.ep.state.played) {
           Row() {
-            Text('✓')
-              .fontSize(11).fontColor(Color.White)
-              .width(20).height(20).textAlign(TextAlign.Center)
-              .borderRadius(10).backgroundColor(Theme.accent)
+            SymbolGlyph($r('sys.symbol.checkmark_circle_fill')).fontSize(20).fontColor([Theme.accent])
           }.width('100%').height('100%')
           .justifyContent(FlexAlign.End).alignItems(VerticalAlign.Top).padding(6)
         }
@@ -127,28 +131,31 @@ export struct EpisodeRow {
       .borderRadius(8).clip(true)
       .backgroundColor(Theme.surface2)
 
-      Column({ space: 4 }) {
+      Column({ space: 5 }) {
         Row({ space: 8 }) {
-          Text(episodeCode(this.ep.seasonNumber, this.ep.episodeNumber))
-            .fontSize(12).fontColor(this.current ? Theme.accent : Theme.text2)
+          Text((this.ep.episodeNumber >= 0 ? this.ep.episodeNumber + '. ' : '') +
+            (this.ep.title.length > 0 ? this.ep.title : episodeCode(this.ep.seasonNumber, this.ep.episodeNumber)))
+            .fontSize(15).fontColor(this.current ? Theme.accent : Theme.text).fontWeight(FontWeight.Bold)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
           Text(formatRuntime(this.ep.runtimeMs))
             .fontSize(12).fontColor(Theme.text3)
         }
-        Text(this.ep.title)
-          .fontSize(15).fontColor(Theme.text).fontWeight(FontWeight.Medium)
-          .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(this.ep.overview)
-          .fontSize(12).fontColor(Theme.text2)
-          .maxLines(this.wide ? 3 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        .width('100%')
+        if (this.ep.overview.length > 0) {
+          Text(this.ep.overview)
+            .fontSize(13).fontColor(Theme.text2).lineHeight(19)
+            .maxLines(this.wide ? 3 : 2).textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
       }
       .layoutWeight(1)
       .alignItems(HorizontalAlign.Start)
     }
     .width('100%')
-    .padding(8)
-    .borderRadius(Theme.radius)
-    .backgroundColor(this.current ? Theme.surface2 : Color.Transparent)
-    .alignItems(VerticalAlign.Top)
+    .padding(10)
+    .borderRadius(12)
+    .backgroundColor(this.current ? '#1FFFFFFF' : Color.Transparent)
+    .alignItems(VerticalAlign.Center)
     .onClick(() => this.onTap())
     .gesture(LongPressGesture({ repeat: false }).onAction(() => this.onLong()))
   }

@@ -2,6 +2,7 @@ import { preferences } from '@kit.ArkData';
 import { util } from '@kit.ArkTS';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { AppContext } from './AppContext';
+import { AppLog } from './AppLog';
 
 /** OWNER: settings agent. App preferences persisted with @kit.ArkData preferences ('settings'). */
 export class AppSettings {
@@ -81,7 +82,7 @@ export class Settings {
       }
     } catch (e) {
       const err = e as BusinessError;
-      console.error(`[Settings] load failed: ${err.code} ${err.message}`);
+      AppLog.error(`[Settings] load failed: ${err.code} ${err.message}`);
     }
     let needSave = false;
     if (!s.deviceId) {
@@ -173,7 +174,7 @@ export class Settings {
       try {
         ls[i]();
       } catch (e) {
-        console.error(`[Settings] listener error: ${(e as Error).message}`);
+        AppLog.error(`[Settings] listener error: ${(e as Error).message}`);
       }
     }
   }
@@ -187,7 +188,7 @@ export class Settings {
       await Settings.store.flush();
     } catch (e) {
       const err = e as BusinessError;
-      console.error(`[Settings] save failed: ${err.code} ${err.message}`);
+      AppLog.error(`[Settings] save failed: ${err.code} ${err.message}`);
     }
   }
 }

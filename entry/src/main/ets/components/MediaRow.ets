@@ -20,9 +20,10 @@ export struct MediaRow {
 
   build() {
     Column({ space: 10 }) {
-      Row() {
+      Row({ space: 10 }) {
+        Column().width(4).height(18).borderRadius(2).backgroundColor(Theme.accent)
         Text(this.row.title)
-          .fontSize(18).fontWeight(FontWeight.Bold).fontColor(Theme.text)
+          .fontSize(19).fontWeight(FontWeight.Bold).fontColor(Theme.text)
           .layoutWeight(1)
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         if (this.showMore) {

@@ -1,4 +1,6 @@
-import { router } from '@kit.ArkUI';
+import { router, promptAction } from '@kit.ArkUI';
+import { BusinessError } from '@kit.BasicServicesKit';
+import { AppLog } from './AppLog';
 
 /** Router params. Pages read them with `router.getParams() as DetailParams` etc. */
 export class DetailParams {
@@ -50,7 +52,17 @@ export class Nav {
     p.itemId = itemId;
     p.startMs = startMs;
     p.queue = queue;
-    router.pushUrl({ url: 'pages/Player', params: p });
+    AppLog.info(`[Nav] play ${sourceId} ${itemId} start=${startMs} queue=${queue.length}`);
+    try {
+      router.pushUrl({ url: 'pages/Player', params: p }).catch((e: BusinessError) => {
+        AppLog.error(`[Nav] open player failed: ${e.code} ${e.message}`);
+        promptAction.showToast({ message: '无法打开播放器 (' + e.code + ')：' + e.message, duration: 3500 });
+      });
+    } catch (e) {
+      const err = e as BusinessError;
+      AppLog.error(`[Nav] open player threw: ${err.code} ${err.message}`);
+      promptAction.showToast({ message: '无法打开播放器：' + err.message, duration: 3500 });
+    }
   }
 
   static library(p: LibraryParams): void {
@@ -88,6 +100,10 @@ export class Nav {
 
   static codecInfo(): void {
     router.pushUrl({ url: 'pages/CodecInfo' });
+  }
+
+  static logs(): void {
+    router.pushUrl({ url: 'pages/LogView' });
   }
 
   static back(): void {

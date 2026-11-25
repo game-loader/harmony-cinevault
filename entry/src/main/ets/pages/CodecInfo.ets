@@ -5,6 +5,7 @@ import { CodecCaps, CodecEntry } from '../media/CodecCaps';
 import {
   CodecRow, SummaryChip, buildRows, summaryChips, groupCount, statusText, statusColor, statusBgColor
 } from '../components/settings/CodecInfoLogic';
+import { AppLog } from '../common/AppLog';
 
 @Entry
 @Component
@@ -35,7 +36,7 @@ struct CodecInfoPage {
     try {
       promptAction.showToast({ message: msg, duration: 2000 });
     } catch (e) {
-      console.error(`[CodecInfo] toast: ${(e as Error).message}`);
+      AppLog.error(`[CodecInfo] toast: ${(e as Error).message}`);
     }
   }
 
@@ -50,7 +51,7 @@ struct CodecInfoPage {
       try {
         entries = CodecCaps.load();
       } catch (e) {
-        console.error(`[CodecInfo] probe failed: ${(e as Error).message}`);
+        AppLog.error(`[CodecInfo] probe failed: ${(e as Error).message}`);
       }
       this.apply(entries);
       this.probing = false;
@@ -71,12 +72,12 @@ struct CodecInfoPage {
       pasteboard.getSystemPasteboard().setData(data).then(() => {
         this.toast('报告已复制到剪贴板');
       }).catch((e: BusinessError) => {
-        console.error(`[CodecInfo] setData: ${e.code} ${e.message}`);
+        AppLog.error(`[CodecInfo] setData: ${e.code} ${e.message}`);
         this.toast('复制失败');
       });
     } catch (e) {
       const err = e as BusinessError;
-      console.error(`[CodecInfo] copy: ${err.code} ${err.message}`);
+      AppLog.error(`[CodecInfo] copy: ${err.code} ${err.message}`);
       this.toast('复制失败');
     }
   }
