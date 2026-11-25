@@ -9,6 +9,7 @@ import { ProviderRegistry } from '../providers/ProviderRegistry';
 import { Settings, AppSettings } from '../common/Settings';
 import { SourceStore } from '../common/SourceStore';
 import { AppContext } from '../common/AppContext';
+import { FlicxMapper } from '../flicx/FlicxMapper';
 import { Theme } from '../common/Theme';
 import { PlayerController, PlayerCallbacks, OpenOptions, EmbeddedTrack, NetStats } from '../player/PlayerController';
 import { PlayerOverlay } from '../player/PlayerOverlay';
@@ -66,6 +67,7 @@ struct PlayerPage {
   @State subDelayMs: number = 0;
   @State subKey: string = 'off';
   @State qualityKey: string = '';
+  @State private isFlicx: boolean = false;
   @State audioKey: string = '';
   @State gestureHint: string = '';
   @State scrubMs: number = -1;
@@ -210,6 +212,7 @@ struct PlayerPage {
       this.fail('媒体源不存在或已被删除');
       return;
     }
+    this.isFlicx = this.provider.config.id === 'flicx';
     await this.loadItem(this.params.itemId, this.params.startMs);
   }
 
@@ -237,6 +240,9 @@ struct PlayerPage {
       return;
     }
     const token = ++this.loadToken;
+    if (this.isFlicx) {
+      this.info = undefined;
+    }
     this.loading = true;
     this.loadingText = '正在加载…';
     this.errorMsg = '';
@@ -283,7 +289,7 @@ struct PlayerPage {
       this.showResumeBanner(start);
     }
     this.req = new PlaybackRequest();
-    this.req.maxBitrate = this.settings.maxBitrate;
+    this.req.maxBitrate = this.isFlicx ? 0 : this.settings.maxBitrate;
     this.req.startMs = start;
     await this.fetchAndOpen(start, token);
     this.loadEpisodes(item);
@@ -337,6 +343,9 @@ struct PlayerPage {
     }
     this.info = info;
     this.curQuality = info.qualities.findIndex((q: QualityOption) => q.url === info.url);
+    if (this.isFlicx) {
+      this.qualityKey = 'q:' + this.curQuality;
+    }
     if (info.durationMs > 0) {
       this.durationMs = info.durationMs;
     }
@@ -374,7 +383,8 @@ struct PlayerPage {
     opt.superResolution = this.settings.superResolution;
     opt.preferHdr = this.settings.preferHdr;
     const lower = url.toLowerCase();
-    opt.isHls = lower.indexOf('.m3u8') >= 0 || (this.info !== undefined && this.info.container.toLowerCase() === 'hls');
+    opt.isHls = this.isFlicx || lower.indexOf('.m3u8') >= 0 ||
+      (this.info !== undefined && this.info.container.toLowerCase() === 'hls');
     this.loadingText = '正在缓冲…';
     this.positionMs = startMs;
     this.openCount++;
@@ -557,7 +567,7 @@ struct PlayerPage {
     this.runFallback(step);
   }
 
-  /** Quality index of the stream now playing (Quark-style sources), -1 if unknown. */
+  /** Index of the active quality or line, -1 if it isn't listed in info.qualities. */
   private playingQuality(): number {
     const info = this.info;
     if (info === undefined || info.qualities.length === 0) {
@@ -572,7 +582,7 @@ struct PlayerPage {
   /** Delivery mode of what is actually playing (a Quark transcode quality counts as 'transcode'). */
   private effectiveMode(): string {
     const info = this.info;
-    if (info === undefined) {
+    if (info === undefined || this.isFlicx) {
       return 'direct';
     }
     const qi = this.playingQuality();
@@ -584,7 +594,7 @@ struct PlayerPage {
 
   private nextFallback(): FallbackStep {
     const info = this.info;
-    if (info === undefined || this.item === undefined) {
+    if (info === undefined || this.item === undefined || this.isFlicx) {
       return new FallbackStep();
     }
     const labels: string[] = info.qualities.map((q: QualityOption) => q.label);
@@ -1443,7 +1453,11 @@ struct PlayerPage {
     if (info !== undefined) {
       s.deliveryMode = this.effectiveMode();
       const qi = this.playingQuality();
-      s.modeNote = qi >= 0 ? (s.deliveryMode === 'transcode' ? '夸克云端 ' + info.qualities[qi].label : '夸克原画') : '';
+      if (this.isFlicx) {
+        s.modeNote = 'Flicx · ' + this.flicxLineLabel(info, qi);
+      } else if (qi >= 0) {
+        s.modeNote = s.deliveryMode === 'transcode' ? '夸克云端 ' + info.qualities[qi].label : '夸克原画';
+      }
       s.transcodeReasons = info.transcodeReasons;
       s.container = info.container;
       s.videoCodec = info.videoCodec;
@@ -1478,7 +1492,7 @@ struct PlayerPage {
   private sheetTitle(): string {
     switch (this.sheet) {
       case 'speed': return '播放速度';
-      case 'quality': return '画质';
+      case 'quality': return this.isFlicx ? '播放线路' : '画质';
       case 'audio': return '音轨';
       case 'subtitle': return '字幕';
       case 'aspect': return '画面比例';
@@ -1488,13 +1502,28 @@ struct PlayerPage {
     }
   }
 
+  private flicxLineLabel(info: PlaybackInfo, index: number): string {
+    if (index < 0) {
+      return '默认线路';
+    }
+    const label = info.qualities[index].label.trim();
+    return label.length > 0 ? label : '线路 ' + (index + 1);
+  }
+
   private qualityItems(): SheetItem[] {
     const out: SheetItem[] = [];
     const info = this.info;
-    if (info !== undefined && info.qualities.length > 0) {
-      out.push(new SheetItem('q:-1', '默认', '', this.qualityKey === '' || this.qualityKey === 'q:-1'));
+    if (this.isFlicx && info === undefined) {
+      return out;
+    }
+    if (info !== undefined && (this.isFlicx || info.qualities.length > 0)) {
+      if (!this.isFlicx || !info.qualities.some((q: QualityOption) => q.url === info.url)) {
+        out.push(new SheetItem('q:-1', this.isFlicx ? '默认线路' : '默认', '',
+          this.qualityKey === '' || this.qualityKey === 'q:-1'));
+      }
       for (let i = 0; i < info.qualities.length; i++) {
-        out.push(new SheetItem('q:' + i, info.qualities[i].label, '', this.qualityKey === 'q:' + i));
+        const label = this.isFlicx ? this.flicxLineLabel(info, i) : info.qualities[i].label;
+        out.push(new SheetItem('q:' + i, label, '', this.qualityKey === 'q:' + i));
       }
       return out;
     }
@@ -1651,8 +1680,17 @@ struct PlayerPage {
     const info = this.info;
     if (kind === 'q' && info !== undefined) {
       const i = Number(val);
+      if (this.isFlicx) {
+        if (!Number.isInteger(i) || i < -1 || i >= info.qualities.length ||
+          (i === this.curQuality && this.errorMsg.length === 0)) {
+          return;
+        }
+        this.errorMsg = '';
+        this.loading = true;
+        this.captureSelection(false);
+      }
       this.qualityKey = 'q:' + i;
-      this.showHint('正在切换画质…');
+      this.showHint(this.isFlicx ? '正在切换线路…' : '正在切换画质…');
       if (i < 0) {
         this.curQuality = info.qualities.findIndex((x: QualityOption) => x.url === info.url);
         this.openUrl(info.url, info.headers, pos);
@@ -1661,9 +1699,13 @@ struct PlayerPage {
         const q = info.qualities[i];
         this.openUrl(q.url, Object.keys(q.headers).length > 0 ? q.headers : info.headers, pos);
       }
+      if (this.isFlicx && this.restoreSubKey.length > 0) {
+        this.restoreSubtitle(info);
+        this.restoreSubKey = '';
+      }
       return;
     }
-    if (kind === 'br') {
+    if (kind === 'br' && !this.isFlicx) {
       const br = Number(val);
       if (br === this.req.maxBitrate) {
         return;
@@ -1775,6 +1817,31 @@ struct PlayerPage {
     }
   }
 
+  private hasOtherFlicxLine(): boolean {
+    const info = this.info;
+    return this.isFlicx && info !== undefined &&
+      (info.url !== this.curUrl || info.qualities.some((q: QualityOption) => q.url !== this.curUrl));
+  }
+
+  private flicxWatchPage(): string {
+    return this.isFlicx && this.item !== undefined ? FlicxMapper.watchPage(this.item.id) : '';
+  }
+
+  private openFlicxPage(): void {
+    const url = this.flicxWatchPage();
+    if (url.length === 0) {
+      return;
+    }
+    try {
+      AppContext.get().openLink(url, { appLinkingOnly: false }).catch((e: BusinessError) => {
+        console.error(`[Player] openLink: ${e.code} ${e.message}`);
+        this.showHint('无法打开浏览器');
+      });
+    } catch (e) {
+      this.showHint('无法打开浏览器');
+    }
+  }
+
   @Builder
   errorView() {
     Column({ space: 16 }) {
@@ -1790,11 +1857,22 @@ struct PlayerPage {
           .backgroundColor(Theme.accent)
           .fontColor(Color.White)
           .onClick(() => this.retry())
-        if (this.info !== undefined && this.effectiveMode() !== 'transcode') {
+        if (this.hasOtherFlicxLine()) {
+          Button('切换线路')
+            .backgroundColor(Theme.surface2)
+            .fontColor(Color.White)
+            .onClick(() => this.openSheet('quality'))
+        } else if (!this.isFlicx && this.info !== undefined && this.effectiveMode() !== 'transcode') {
           Button('尝试转码播放')
             .backgroundColor(Theme.surface2)
             .fontColor(Color.White)
             .onClick(() => this.retryTranscode())
+        }
+        if (this.flicxWatchPage().length > 0) {
+          Button('网页播放')
+            .backgroundColor(Theme.surface2)
+            .fontColor(Color.White)
+            .onClick(() => this.openFlicxPage())
         }
         Button('返回')
           .backgroundColor(Theme.surface2)
@@ -1872,7 +1950,7 @@ struct PlayerPage {
         locked: this.locked,
         showControls: this.showControls && this.errorMsg.length === 0,
         speedText: this.speed === 1 ? '倍速' : speedLabel(this.speed),
-        qualityText: this.req.maxBitrate > 0 ? '转码' : '画质',
+        qualityText: this.isFlicx ? '线路' : (this.req.maxBitrate > 0 ? '转码' : '画质'),
         aspectText: aspectLabel(this.aspect),
         hasEpisodes: this.item !== undefined && this.item.type === 'episode',
         hasNext: this.hasNext,

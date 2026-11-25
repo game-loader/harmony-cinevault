@@ -13,3 +13,12 @@ components/settings/CodecInfoLogic
 quark/QuarkTypes
 quark/QuarkTvSign
 media/ProfileBuilder
+flicx/FlicxModels
+flicx/FlicxMapper
+flicx/FlicxApi
+common/Http
+common/Settings
+scraper/TmdbTypes
+scraper/TmdbClient
+flicx/FlicxSearch
+flicx/FlicxProvider

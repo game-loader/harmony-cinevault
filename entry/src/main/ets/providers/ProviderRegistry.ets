@@ -3,6 +3,8 @@ import { SourceConfig } from '../common/Models';
 import { SourceStore } from '../common/SourceStore';
 import { EmbyProvider } from './EmbyProvider';
 import { QuarkProvider } from '../quark/QuarkProvider';
+import { FlicxProvider } from '../flicx/FlicxProvider';
+import { FLICX_ID } from '../flicx/FlicxMapper';
 
 class CacheEntry {
   provider: MediaProvider;
@@ -16,6 +18,7 @@ class CacheEntry {
 
 /** OWNER: settings agent. Creates and caches one MediaProvider per SourceConfig. */
 export class ProviderRegistry {
+  private static readonly flicx: FlicxProvider = new FlicxProvider();
   private static cache: Map<string, CacheEntry> = new Map<string, CacheEntry>();
   private static subscribed: boolean = false;
 
@@ -49,6 +52,9 @@ export class ProviderRegistry {
 
   /** Provider for an enabled or disabled source; undefined if the source does not exist. */
   static get(sourceId: string): MediaProvider | undefined {
+    if (sourceId === FLICX_ID) {
+      return ProviderRegistry.flicx;
+    }
     ProviderRegistry.ensureSubscribed();
     const cfg = SourceStore.get(sourceId);
     if (cfg === undefined) {
@@ -83,6 +89,7 @@ export class ProviderRegistry {
         out.push(p);
       }
     }
+    out.push(ProviderRegistry.flicx);
     return out;
   }
 

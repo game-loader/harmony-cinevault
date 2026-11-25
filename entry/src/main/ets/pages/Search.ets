@@ -247,6 +247,15 @@ struct SearchPage {
   build() {
     Column() {
       this.searchBar()
+      Text('内置 Flicx 搜索。在「设置 › 刮削」填写 TMDB 密钥即可搜中文片名。')
+        .fontSize(12).fontColor(Theme.text2).width('100%')
+        .padding({ left: Theme.pagePad, right: Theme.pagePad, bottom: 8 })
+        .onClick(() => Nav.settings())
+      if (!this.loading && this.warnings.length > 0) {
+        InlineWarning({ text: '部分媒体源搜索失败：' + this.warnings.join('；'),
+          onClose: () => { this.warnings = []; } })
+          .padding({ left: Theme.pagePad, right: Theme.pagePad })
+      }
       if (this.searched.length === 0 && !this.loading) {
         Scroll() {
           this.recentView()
@@ -263,13 +272,6 @@ struct SearchPage {
           .layoutWeight(1)
       } else {
         List({ space: 22 }) {
-          if (this.warnings.length > 0) {
-            ListItem() {
-              InlineWarning({ text: '部分媒体源搜索失败：' + this.warnings.join('；'),
-                onClose: () => { this.warnings = []; } })
-                .padding({ left: Theme.pagePad, right: Theme.pagePad })
-            }
-          }
           ForEach(this.rows, (r: HomeRow) => {
             ListItem() {
               MediaRow({ row: r, posterWidth: this.posterWidth(), onChanged: (n: MediaItem) => this.onItemChanged(n) })

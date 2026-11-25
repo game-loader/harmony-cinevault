@@ -4,7 +4,8 @@ import { MediaItem, Person } from '../common/Models';
 import { ParsedName, titleSimilarity, normKey } from './NameParser';
 import {
   TmdbSearchResponse, TmdbSearchResult, TmdbDetail, TmdbSeason, TmdbEpisode, TmdbImage, TmdbCast, TmdbCrew,
-  TmdbErrorBody, TmdbReleaseCountry, TmdbReleaseDate, TmdbGenre, TmdbCompany, TmdbContentRating, TmdbSeasonSummary
+  TmdbErrorBody, TmdbReleaseCountry, TmdbReleaseDate, TmdbGenre, TmdbCompany, TmdbContentRating, TmdbSeasonSummary,
+  TmdbFindResponse, TmdbExternalIds
 } from './TmdbTypes';
 
 export type TmdbKind = 'movie' | 'tv';
@@ -161,6 +162,19 @@ export class TmdbClient {
   }
 
   // ---------------- raw API ----------------
+
+  static async findByImdbId(imdbId: string, kind: TmdbKind): Promise<TmdbSearchResult | undefined> {
+    const body = await TmdbClient.get('/find/' + encodeURIComponent(imdbId), { 'external_source': 'imdb_id' });
+    const result = JSON.parse(body) as TmdbFindResponse;
+    const rows = kind === 'movie' ? result.movie_results : result.tv_results;
+    return rows?.find((r: TmdbSearchResult) => num(r.id) > 0);
+  }
+
+  /** Small response for search candidates. Cast, credits and images are loaded when opening a title. */
+  static async imdbIdFor(kind: TmdbKind, id: string): Promise<string> {
+    const body = await TmdbClient.get('/' + kind + '/' + encodeURIComponent(id) + '/external_ids', {});
+    return str((JSON.parse(body) as TmdbExternalIds).imdb_id);
+  }
 
   static async searchMovie(query: string, year: number): Promise<TmdbSearchResult[]> {
     const p: Record<string, string> = { 'query': query, 'include_adult': 'false' };

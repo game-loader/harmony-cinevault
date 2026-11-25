@@ -255,19 +255,28 @@ struct IndexPage {
         .width(88).height(88).textAlign(TextAlign.Center)
         .borderRadius(22).backgroundColor(Theme.accent)
       Text('欢迎使用影库').fontSize(28).fontWeight(FontWeight.Bold).fontColor(Theme.text)
-      Text('连接你的 Emby / Jellyfin 服务器，或登录夸克网盘并自动刮削影视资料，打造私人影院。')
+      Text('使用内置 Flicx 搜索电影和剧集，也可以连接 Emby / Jellyfin 服务器或登录夸克网盘。')
         .fontSize(14).fontColor(Theme.text2).textAlign(TextAlign.Center).lineHeight(22)
         .constraintSize({ maxWidth: 460 })
       Column({ space: 12 }) {
         Button() {
           Row({ space: 8 }) {
-            SymbolGlyph($r('sys.symbol.cloud')).fontSize(18).fontColor([Color.White])
-            Text('添加 Emby / Jellyfin').fontSize(16).fontColor(Color.White).fontWeight(FontWeight.Medium)
+            SymbolGlyph($r('sys.symbol.magnifyingglass')).fontSize(18).fontColor([Color.White])
+            Text('搜索电影和剧集').fontSize(16).fontColor(Color.White).fontWeight(FontWeight.Medium)
           }
         }
         .type(ButtonType.Capsule).backgroundColor(Theme.accent)
         .width('100%').height(48)
         .defaultFocus(true)
+        .onClick(() => Nav.search())
+        Button() {
+          Row({ space: 8 }) {
+            SymbolGlyph($r('sys.symbol.cloud')).fontSize(18).fontColor([Theme.text])
+            Text('添加 Emby / Jellyfin').fontSize(16).fontColor(Theme.text).fontWeight(FontWeight.Medium)
+          }
+        }
+        .type(ButtonType.Capsule).backgroundColor(Theme.surface2)
+        .width('100%').height(48)
         .onClick(() => Nav.editServer('', 'emby'))
         Button() {
           Row({ space: 8 }) {
@@ -284,8 +293,8 @@ struct IndexPage {
       .margin({ top: 8 })
       Row({ space: 6 }) {
         SymbolGlyph($r('sys.symbol.info_circle')).fontSize(14).fontColor([Theme.text3])
-        Text(this.hasTmdbKey ? '已配置 TMDB，夸克网盘中的影片将自动刮削海报与简介'
-          : '夸克网盘刮削需要 TMDB API Key，可在 设置 中填写')
+        Text(this.hasTmdbKey ? '已启用中文片名搜索'
+          : '可直接搜英文片名。在「设置 › 刮削」填写 TMDB 密钥即可搜中文片名。')
           .fontSize(12).fontColor(Theme.text3)
       }
       .margin({ top: 8 })

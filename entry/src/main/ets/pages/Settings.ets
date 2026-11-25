@@ -462,10 +462,11 @@ struct SettingsPage {
   @Builder
   Body() {
     List({ space: 1 }) {
-      ListItemGroup({ header: this.GroupHeader('媒体源'), footer: this.GroupFooter('关闭开关可暂时隐藏该媒体源的内容') }) {
+      ListItemGroup({ header: this.GroupHeader('媒体源'), footer: this.GroupFooter('关闭开关可暂时隐藏对应的私人媒体源') }) {
+        ListItem() { this.InfoRow('Flicx', '内置电影和剧集搜索源') }
         if (this.sources.length === 0) {
           ListItem() {
-            Text('还没有添加媒体源，请从下方添加 Emby、Jellyfin 服务器或夸克网盘')
+            Text('还没有添加私人媒体源，可从下方添加 Emby、Jellyfin 服务器或夸克网盘')
               .fontSize(14).fontColor(Theme.text2).padding(16).width('100%').backgroundColor(Theme.surface)
           }
         }
@@ -481,7 +482,8 @@ struct SettingsPage {
 
       ListItemGroup({
         header: this.GroupHeader('刮削'),
-        footer: this.GroupFooter('夸克网盘中的视频通过 TMDB 匹配海报和简介。API Key 可在 themoviedb.org/settings/api 免费申请')
+        footer: this.GroupFooter('此密钥用于 Flicx 中文片名搜索、影片资料和夸克网盘刮削。' +
+          'API Key 可在 themoviedb.org/settings/api 免费申请')
       }) {
         ListItem() {
           Column() {
@@ -601,7 +603,8 @@ struct SettingsPage {
         ListItem() {
           Column() {
             Text('开源与数据声明').fontSize(16).fontColor(Theme.text)
-            Text('本应用不提供任何影视内容，所有媒体均来自用户自行配置的 Emby / Jellyfin 服务器或个人网盘。' +
+            Text('本应用不托管影视内容。私人媒体来自用户配置的 Emby / Jellyfin 服务器或夸克网盘，' +
+              '内置在线搜索和播放线路由 Flicx 提供。' +
               '影视元数据与图片由 TMDB 提供（This product uses the TMDB API but is not endorsed or certified by TMDB）。' +
               'Emby、Jellyfin、夸克网盘为其各自所有者的商标。')
               .fontSize(13).fontColor(Theme.text2).margin({ top: 6 }).lineHeight(20)

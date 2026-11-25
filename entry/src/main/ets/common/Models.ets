@@ -1,7 +1,7 @@
 // Shared data model. Every source (Emby, Jellyfin, Quark+scraper) maps into these types.
 // ArkTS rules: classes with explicit field types, no `any`, no untyped object literals.
 
-export type SourceKind = 'emby' | 'jellyfin' | 'quark';
+export type SourceKind = 'emby' | 'jellyfin' | 'quark' | 'flicx';
 
 export type MediaType = 'movie' | 'series' | 'season' | 'episode' | 'folder' | 'collection' | 'video';
 

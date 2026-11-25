@@ -29,6 +29,11 @@ export interface TmdbSearchResponse {
   results?: TmdbSearchResult[];
 }
 
+export interface TmdbFindResponse {
+  movie_results?: TmdbSearchResult[];
+  tv_results?: TmdbSearchResult[];
+}
+
 export interface TmdbCast {
   name?: string;
   character?: string;
